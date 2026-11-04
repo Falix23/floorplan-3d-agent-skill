@@ -1,4 +1,4 @@
 interface:
-  display_name: "图片转可编辑户型"
-  short_description: "识别户型图，映射家具与估计尺寸，生成可编辑的 2D/3D HTML"
-  default_prompt: "使用 $floorplan-image 将这张户型图片转成可编辑的 2D/3D 页面，说明尺度依据与不确定信息。"
+  display_name: "图片转可编辑户型与家具"
+  short_description: "还原户型图，或用家具照片重建近似模型，生成可编辑的 2D/3D 页面"
+  default_prompt: "使用 $floorplan-image 处理我提供的户型图或家具照片，生成可编辑的 2D/3D 页面；家具照片替换指定实例，并说明尺寸依据、外观近似与不确定信息。"

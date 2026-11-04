@@ -93,7 +93,7 @@ def refine_plan(plan):
 
 def from_pixels(data):
     """观测框与图像先统一坐标，任何尺寸变化都留有证据。"""
-    p={k:copy.deepcopy(data[k]) for k in ('id','title','height','uncertainties') if k in data}
+    p={k:copy.deepcopy(data[k]) for k in ('id','title','height','uncertainties','furnitureAssets') if k in data}
     p.update(schemaVersion=1,units='mm',height=data.get('height',2800))
     calibration=data.get('calibration',{})
     anchors=[]

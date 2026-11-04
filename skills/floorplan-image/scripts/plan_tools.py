@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT / 'scripts'))
 from reconstruct import refine_plan
+from asset_validation import validate_asset
 
 CATALOG = json.loads((ROOT / "references/furniture-catalog.json").read_text())
 TYPES = {x["type"] for x in CATALOG}
@@ -119,11 +120,18 @@ def validate(plan):
         openings.append(d["rect"])
     for i,o in enumerate(openings):
         require(not any(overlap(o,w) for w in p["walls"]),"门窗洞口 %d 被实体墙覆盖，需先切开墙段"%i)
+    assets=p.get("furnitureAssets",{})
+    require(isinstance(assets,dict),"furnitureAssets 必须为资产id到资产的对象")
+    for aid,asset in assets.items():
+        validate_asset(asset,aid)
     ids=set()
     for f in p["furniture"]:
         require(isinstance(f,dict) and token(f.get("id")) and f["id"] not in ids,"家具 id 无效/重复")
         ids.add(f["id"])
         require(f.get("type") in TYPES,"未知家具类型: "+str(f.get("type")))
+        require("height" not in f or (finite(f["height"]) and 1 <= f["height"] <= 10000),"家具高度需为1～10000mm")
+        if "assetId" in f:
+            require(token(f["assetId"]) and f["assetId"] in assets,"家具引用了不存在的资产")
         require(isinstance(f.get("name"),str) and all(finite(f.get(k)) for k in ("cx","cy","w","d","rot")) and f["w"]>0 and f["d"]>0,"家具位置/尺寸无效")
         require(bool(re.fullmatch(r"#[0-9a-fA-F]{6}",f.get("color","#dddddd"))),"家具颜色需 #RRGGBB")
         if f.get('placement'):

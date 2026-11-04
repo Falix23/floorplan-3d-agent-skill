@@ -4,7 +4,7 @@
 
 This derivative project is based on **[wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d)** by **[wuyi (wy51ai)](https://github.com/wy51ai)**. The original copyright notice and complete MIT License are preserved below and in [LICENSE](LICENSE).
 
-This fork is maintained by `lbj00jay`. The image-to-floorplan Skill and related enhancements are additions in this fork; they do not imply the original author's participation or endorsement.
+This fork is maintained by `Falix23`. The image-to-floorplan Skill and related enhancements are additions in this fork; they do not imply the original author's participation or endorsement.
 
 ```text
 MIT License
@@ -58,6 +58,16 @@ A pure front-end tool for interior design on a floor plan: place furniture, remo
 - Undo / redo; plans are auto-saved in the browser's local storage
 - Chinese / English UI toggle (button on the right of the top bar; defaults to Chinese and remembers your choice)
 - Export to PNG, export / import plans as JSON
+
+## Furniture photos and custom assets (development version)
+
+The development branch adds an Agent workflow that reconstructs a single furniture photo with an open-source method, prepares an embedded GLB and a top-down 2D image from the same mesh, and replaces a specified furniture item in an existing plan. The local `image_to_furniture.py` wrapper orchestrates [TripoSR](https://github.com/VAST-AI-Research/TripoSR), recording code/model revisions, weight hashes and input provenance; an existing mesh with clear usage rights can also be used. Without an explicitly checked front axis, the wrapper stops at `needs_alignment` after reconstruction, before replacing furniture. This is a development capability, not a released feature.
+
+Use `$floorplan-image` with a clear furniture photo, the current plan, the target item ID and any known product dimensions. The Agent must inspect the actual image and mesh, document inferred dimensions and unseen surfaces, prepare the asset, attach it to the item, then check the real HTML in 2D and 3D. A perspective photo is not a floor-plan footprint, and a generic parametric model is not a successful photo reconstruction.
+
+Assets are stored in `plan.furnitureAssets`; furniture keeps its semantic `type` and references `assetId`, with an optional `height` in mm. The model, top-view image and provenance travel with the complete JSON/HTML. Width, depth, height, position and rotation remain editable. The first asset-preparation version samples textures into vertex colors, so fine texture detail is simplified. Separate-axis fitting can also distort proportions and must be checked visually. Large embedded assets may exceed browser storage quotas, so keep the complete JSON/HTML backup and check the actual save result.
+
+The basic plan builder uses Python's standard library. Optional asset preparation requires `trimesh`, `Pillow` and related dependencies; image-to-3D inference runs in a separate environment. The HTML does not run reconstruction or store API keys. Keep input photos, model weights and generated files out of public commits. Method/model licenses and photo usage rights are recorded separately. See the [furniture workflow](skills/floorplan-image/references/furniture-image.md) and [asset schema](skills/floorplan-image/references/plan-schema.md).
 
 ## Quick Start
 
