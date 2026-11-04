@@ -1,4 +1,6 @@
-# 仅用于已有网格的prepare/俯视渲染；TripoSR另用官方独立推理环境。
+# 仅用于已有网格的prepare/俯视渲染；当前流程不部署或运行图生3D模型。
 numpy>=1.24,<2
 Pillow>=10,<12
 trimesh==4.0.5
+# trimesh导出顶点法线所需的纯CPU稀疏矩阵依赖。
+scipy>=1.10,<2

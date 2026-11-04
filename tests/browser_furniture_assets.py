@@ -12,6 +12,7 @@ import threading
 
 from PIL import Image
 from playwright.sync_api import sync_playwright
+from browser_runtime import configure_browser_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("plan_tools", ROOT / "skills/floorplan-image/scripts/plan_tools.py")
@@ -80,6 +81,7 @@ def run():
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--use-gl=angle", "--use-angle=swiftshader", "--enable-webgl", "--ignore-certificate-errors"])
             context = browser.new_context(viewport={"width": 1500, "height": 1000}, ignore_https_errors=True, accept_downloads=True)
+            configure_browser_runtime(context)
             page = context.new_page()
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(f"http://127.0.0.1:{server.server_port}/outputs/furniture-assets-browser-qa/index.html")
@@ -199,6 +201,7 @@ def run_targeted():
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--use-gl=angle", "--use-angle=swiftshader", "--enable-webgl", "--ignore-certificate-errors"])
             context = browser.new_context(viewport={"width": 1500, "height": 1000}, ignore_https_errors=True)
+            configure_browser_runtime(context)
             page = context.new_page()
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(f"http://127.0.0.1:{server.server_port}/outputs/furniture-assets-browser-targeted/index.html")
@@ -302,6 +305,7 @@ def run_bad_png():
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--use-gl=angle", "--use-angle=swiftshader", "--enable-webgl", "--ignore-certificate-errors"])
             context = browser.new_context(viewport={"width": 1500, "height": 1000}, ignore_https_errors=True)
+            configure_browser_runtime(context)
             page = context.new_page()
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(f"http://127.0.0.1:{server.server_port}/outputs/furniture-assets-browser-bad-png/index.html")

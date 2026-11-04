@@ -1249,8 +1249,8 @@ function furnPanel(f){
       <button class="btn" id="aTop">${tr('置于顶层','Bring to front')}</button><button class="btn" id="aBot">${tr('置于底层','Send to back')}</button>
       <button class="btn danger" id="aDel">${tr('删除','Delete')}</button><button class="btn" id="back">${tr('← 返回','← Back')}</button>
     </div></section>
-  <section><h3>${tr('图片家具模型','Photo furniture model')}</h3>
-    <p class="muted">${f.assetId?`${tr('当前资产','Current asset')}: ${esc(f.assetId)} · ${tr('单图生成近似，尺寸与背面需复核','Single-image approximation; verify dimensions and unseen sides')}`:tr('可由 Agent 从家具图片生成资产包，再替换当前家具。','Ask the Agent to generate an asset package from a furniture photo, then replace this item.')}</p>
+  <section><h3>${tr('家具模型资产','Furniture model asset')}</h3>
+    <p class="muted">${f.assetId?`${tr('当前资产','Current asset')}: ${esc(f.assetId)} · ${tr('自定义模型，尺寸与来源需复核','Custom model; verify dimensions and source')}`:tr('可由 Agent 匹配或适配已有模型，再替换当前家具。','Ask the Agent to match or adapt an existing model, then replace this item.')}</p>
     <input type="file" id="fAssetFile" accept="application/json,.json" hidden>
     <button class="btn" id="fAssetImport">${tr('导入家具资产 JSON','Import furniture asset JSON')}</button>
     ${f.assetId?`<button class="btn" id="fAssetRestore">${tr('恢复默认模型','Restore default model')}</button>`:''}
@@ -2505,8 +2505,10 @@ function buildFurniture(f){
   }
   const content=new THREE.Group();
   while(g.children.length)content.add(g.children[0]);
-  const bounds=new THREE.Box3().setFromObject(content),size=bounds.getSize(new THREE.Vector3()),center=bounds.getCenter(new THREE.Vector3());
+  // 倾斜杆件的局部包围盒会高估占地；按真实顶点拟合，并把最低点落到地面。
+  const bounds=new THREE.Box3().setFromObject(content,true),size=bounds.getSize(new THREE.Vector3()),center=bounds.getCenter(new THREE.Vector3());
   if(size.x>1e-6&&size.z>1e-6){content.scale.x=w/size.x;content.scale.z=d/size.z;content.position.x=-center.x*content.scale.x;content.position.z=-center.z*content.scale.z;}
+  if(Number.isFinite(bounds.min.y))content.position.y=-bounds.min.y;
   g.add(content);
   g.position.set(wx(f.cx), 0, wz(f.cy));
   g.rotation.y = -f.rot * Math.PI/180;       // 平面顺时针旋转 → 绕 Y 轴负向

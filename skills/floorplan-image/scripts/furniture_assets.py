@@ -46,6 +46,123 @@ def validated_orientation(document):
     return rotation, {'rotation': rotation.tolist(), 'evidence': document['evidence'].strip()}
 
 
+def normalized_rgba(colors, vertex_count):
+    """仅广播明确的单个RGB/RGBA值；拒绝缺失、越界或数量不符的颜色。"""
+    import numpy as np
+    try:
+        values = np.asarray(colors)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('颜色数组无法读取') from exc
+    if values.ndim == 1 and values.shape[0] in (3, 4):
+        values = np.broadcast_to(values, (vertex_count, values.shape[0]))
+    if (values.ndim != 2 or values.shape[0] != vertex_count
+            or values.shape[1] not in (3, 4) or vertex_count <= 0):
+        raise ValueError('颜色需要单个RGB/RGBA或每个顶点对应的RGB/RGBA数组')
+    if values.dtype.kind not in 'uif' or not np.isfinite(values).all():
+        raise ValueError('颜色仅接受有限数值')
+    if (values < 0).any() or (values > 255).any():
+        raise ValueError('颜色通道需在0到255之间，不自动猜测或裁剪')
+    result = np.rint(values).astype(np.uint8)
+    if result.shape[1] == 3:
+        result = np.column_stack([result, np.full(vertex_count, 255, dtype=np.uint8)])
+    return result
+
+
+def sampled_texture_rgba(image, uv, vertex_count):
+    """沿用trimesh的近邻/重复采样，取整后再次取模，避免边界索引越界。"""
+    import numpy as np
+    coordinates = np.asarray(uv, dtype=np.float64)
+    if coordinates.shape != (vertex_count, 2) or not np.isfinite(coordinates).all():
+        raise ValueError('纹理UV需要每个顶点对应的有限二维坐标')
+    pixels = np.asarray(image.convert('RGBA'))
+    height, width = pixels.shape[:2]
+    x = (coordinates[:, 0] * (width - 1)) % width
+    y = ((1 - coordinates[:, 1]) * (height - 1)) % height
+    # 例如width-0.0001取整会得到width；必须在取整后处理重复边界。
+    return pixels[np.rint(y).astype(np.int64) % height,
+                  np.rint(x).astype(np.int64) % width]
+
+
+def texture_vertex_color_multiplier(visual, vertex_count, path):
+    """读取材质并存的COLOR_0；glTF定义为线性乘数，不再做sRGB转换。"""
+    import numpy as np
+    attributes = getattr(visual, 'vertex_attributes', {})
+    if 'color' not in attributes:
+        return None
+    values = np.asarray(attributes['color'])
+    if (values.ndim != 2 or values.shape[0] != vertex_count
+            or values.shape[1] not in (3, 4)):
+        raise ValueError('材质顶点颜色需要每个顶点对应的RGB/RGBA数组')
+    if Path(path).suffix.lower() in ('.glb', '.gltf'):
+        # trimesh保留该accessor的原始类型：float[0,1]或归一化u8/u16。
+        if values.dtype.kind == 'u' and values.dtype.itemsize in (1, 2):
+            divisor = np.iinfo(values.dtype).max
+        elif values.dtype.kind == 'f':
+            divisor = 1.
+        else:
+            raise ValueError('glTF材质顶点颜色仅支持float或归一化uint8/uint16')
+        linear = values.astype(np.float64) / divisor
+        if not np.isfinite(linear).all() or (linear < 0).any() or (linear > 1).any():
+            raise ValueError('glTF材质顶点颜色需要有限的0到1线性乘数')
+        if linear.shape[1] == 3:
+            linear = np.column_stack([linear, np.ones(vertex_count)])
+        return linear
+    colors = normalized_rgba(values, vertex_count).astype(np.float64) / 255
+    rgb = colors[:, :3]
+    colors[:, :3] = np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
+    return colors
+
+
+def linear_vertex_colors(visual, vertex_count, path, color_space):
+    """保留PBR贴图与线性baseColorFactor的来源，输出线性RGBA顶点色。"""
+    import numpy as np
+    from trimesh.visual.material import PBRMaterial
+    factor, vertex_multiplier = None, None
+    if visual.kind == 'texture':
+        vertex_multiplier = texture_vertex_color_multiplier(visual, vertex_count, path)
+        material = visual.material
+        if isinstance(material, PBRMaterial):
+            texture = material.baseColorTexture
+            if texture is not None:
+                colors = sampled_texture_rgba(texture, visual.uv, vertex_count)
+                factor = material.baseColorFactor
+                source, default_space = 'pbr-base-color-texture', 'srgb'
+            elif material.baseColorFactor is not None:
+                colors = material.baseColorFactor
+                source, default_space = 'pbr-base-color-factor', 'linear'
+            else:
+                # glTF规范中未写baseColorFactor的PBR材质明确默认线性白色。
+                colors = [255, 255, 255, 255]
+                source, default_space = 'pbr-default-white', 'linear'
+        elif getattr(material, 'image', None) is not None:
+            colors = sampled_texture_rgba(material.image, visual.uv, vertex_count)
+            source, default_space = 'material-texture', 'srgb'
+        else:
+            colors = visual.to_color().vertex_colors
+            source, default_space = 'material-color', 'srgb'
+    else:
+        colors = visual.vertex_colors
+        source = 'vertex-colors'
+        default_space = 'linear' if Path(path).suffix.lower() in ('.glb', '.gltf') else 'srgb'
+    colors = normalized_rgba(colors, vertex_count)
+    space = default_space if color_space == 'auto' else color_space
+    if space not in ('srgb', 'linear'):
+        raise ValueError('颜色空间仅支持auto、srgb、linear')
+    linear = colors.astype(np.float64) / 255
+    if space == 'srgb':
+        rgb = linear[:, :3]
+        linear[:, :3] = np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
+    if factor is not None:
+        # glTF的baseColorFactor为线性乘数，不可当作sRGB重复变换。
+        linear *= normalized_rgba(factor, vertex_count).astype(np.float64) / 255
+    if vertex_multiplier is not None:
+        # glTF最终基色 = 线性贴图 × 线性baseColorFactor × 线性COLOR_0，alpha同乘。
+        linear *= vertex_multiplier
+    return np.rint(linear * 255).astype(np.uint8), {
+        'source': source, 'inputColorSpace': space, 'pbrFactorApplied': factor is not None,
+        'vertexColorMultiplierApplied': vertex_multiplier is not None}
+
+
 def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orientation_matrix=None):
     try:
         import numpy as np
@@ -62,28 +179,33 @@ def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orie
         orientation = None
     # 资产在离线工具中导入，打包后不再允许任何外部资源URI。
     scene = trimesh.load(str(path), force='scene', process=False)
-    meshes = []
+    meshes, transformed_normals, color_sampling = [], [], []
     for node in scene.graph.nodes_geometry:
         transform, geometry_name = scene.graph[node]
         geometry = scene.geometry[geometry_name]
         if not isinstance(geometry, trimesh.Trimesh) or len(geometry.faces) == 0:
             continue
+        # 在写顶点坐标使缓存失效前保留作者法线；缺失时trimesh从源几何计算。
+        normals = np.asarray(geometry.vertex_normals, dtype=np.float64).copy()
+        if (normals.shape != (len(geometry.vertices), 3) or not np.isfinite(normals).all()
+                or (np.linalg.norm(normals, axis=1) <= 1e-12).any()):
+            raise ValueError('原始网格法线缺失、非有限或长度为零，无法可靠导出')
+        try:
+            normals = normals @ np.linalg.inv(rotation @ np.asarray(transform)[:3, :3])
+        except np.linalg.LinAlgError as exc:
+            raise ValueError('网格节点变换不可逆，不能变换法线') from exc
         mesh = geometry.copy()
         mesh.apply_transform(transform)
         mesh.vertices = np.asarray(mesh.vertices) @ rotation.T
         if not np.isfinite(mesh.vertices).all():
             raise ValueError('原始网格包含非有限顶点')
-        # 首版统一为顶点色，避免材质扩展/外部纹理依赖，保留已采样的颜色。
-        visual = mesh.visual
-        colors = visual.to_color().vertex_colors if visual.kind == 'texture' else visual.vertex_colors
-        colors = np.asarray(colors).copy()
-        space = vertex_color_space if vertex_color_space != "auto" else ("linear" if visual.kind != "texture" and Path(path).suffix.lower() in (".glb", ".gltf") else "srgb")
-        if space == "srgb":
-            rgb = colors[:, :3].astype(float) / 255
-            rgb = np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
-            colors[:, :3] = np.rint(rgb * 255).astype(np.uint8)
+        # 同几何俯视与默认导出均使用已合成的线性顶点色；PBR模式另保留源材质。
+        # TextureVisuals.copy()只带UV/材质，可能丢掉并存的COLOR_0；从源visual采样。
+        colors, sampling = linear_vertex_colors(geometry.visual, len(mesh.vertices), path, vertex_color_space)
+        color_sampling.append({'node': node, **sampling})
         mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=colors)
         meshes.append(mesh)
+        transformed_normals.append(normals)
     if not meshes:
         raise ValueError('文件没有可用三角网格')
     all_vertices = np.concatenate([mesh.vertices for mesh in meshes])
@@ -92,8 +214,14 @@ def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orie
     if np.min(extent) <= 1e-8:
         raise ValueError('网格宽深高不能为零')
     origin = np.array([(lower[0] + upper[0]) / 2, lower[1], (lower[2] + upper[2]) / 2])
-    for mesh in meshes:
+    for mesh, normals in zip(meshes, transformed_normals):
         mesh.vertices = (mesh.vertices - origin) / extent
+        # 归一化含非均匀缩放：法线用逆转置，不能按顶点的缩放矩阵处理。
+        normals *= extent
+        lengths = np.linalg.norm(normals, axis=1)
+        if not np.isfinite(normals).all() or not np.isfinite(lengths).all() or (lengths <= 1e-12).any():
+            raise ValueError('变换后的网格法线非有限或长度为零')
+        mesh.vertex_normals = normals / lengths[:, None]
     report = {
         'orientationMode': 'explicit_matrix' if orientation is not None else 'cardinal_axes',
         'sourceUpAxis': None if orientation is not None else up_axis,
@@ -108,6 +236,8 @@ def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orie
         'fitMode': 'dimensions_from_plan',
         'colorMode': 'linear-vertex-colors-in-glb-srgb-top-view',
         'sourceVertexColorSpace': vertex_color_space,
+        'colorSampling': color_sampling,
+        'normalTransform': 'source-normal-inverse-transpose-of-scene-rotation-and-normalization',
         'triangles': sum(len(mesh.faces) for mesh in meshes),
     }
     return meshes, report
@@ -160,17 +290,109 @@ def render_top_view(meshes, resolution=384):
     return output.getvalue()
 
 
-def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis='-y', method='provided-mesh', license_name='unknown', resolution=384, provenance=None, vertex_color_space="auto", orientation_matrix=None):
+def pbr_export_meshes(path, meshes, alignment, texture_max_size):
+    """只恢复3D副本的源UV/材质；2D采样网格、几何和作者法线不改。"""
+    import trimesh
+    import numpy as np
+    from PIL import Image
+    scene = trimesh.load(str(path), force='scene', process=False)
+    material_cache, image_cache, texture_records, exported = {}, {}, [], []
+    properties = ('baseColorTexture', 'metallicRoughnessTexture', 'normalTexture',
+                  'occlusionTexture', 'emissiveTexture', 'image')
+    for mesh, sampling in zip(meshes, alignment['colorSampling']):
+        _, name = scene.graph[sampling['node']]
+        original = scene.geometry[name]
+        part = mesh.copy()
+        if original.visual.kind == 'texture':
+            visual = original.visual.copy()
+            vertex_multiplier = texture_vertex_color_multiplier(original.visual, len(part.vertices), path)
+            if vertex_multiplier is not None:
+                # trimesh的GLB导出固定写u8 COLOR_0，先显式量化，避免float被直接截断。
+                visual.vertex_attributes['color'] = np.rint(vertex_multiplier * 255).astype(np.uint8)
+            source_material = original.visual.material
+            key = id(source_material)
+            if key not in material_cache:
+                material = source_material.copy()
+                for property_name in properties:
+                    image = getattr(source_material, property_name, None)
+                    if image is None:
+                        continue
+                    source_key = hashlib.sha256(image.mode.encode() + str(image.size).encode() + image.tobytes()).hexdigest()
+                    reference = {'material': source_material.name, 'property': property_name}
+                    if source_key not in image_cache:
+                        width, height = image.size
+                        factor = min(1, texture_max_size / max(width, height))
+                        size = (max(1, round(width * factor)), max(1, round(height * factor)))
+                        resized = image.copy() if size == image.size else image.resize(size, Image.Resampling.LANCZOS)
+                        record = {'sourcePixelSha256': source_key, 'sourceSize': list(image.size),
+                                  'outputSize': list(size), 'resampling': 'LANCZOS' if size != image.size else 'unchanged',
+                                  'references': []}
+                        image_cache[source_key] = (resized, record)
+                        texture_records.append(record)
+                    resized, record = image_cache[source_key]
+                    record['references'].append(reference)
+                    setattr(material, property_name, resized)
+                material_cache[key] = material
+            visual.material = material_cache[key]
+            part.visual = visual
+        # copy默认不带缓存；不能让已验证的作者法线再次被重算。
+        part.vertex_normals = mesh.vertex_normals.copy()
+        exported.append(part)
+    return exported, texture_records
+
+
+def deduplicate_material_images(tree):
+    """trimesh已复用相同BIN数据；合并其重复image/texture引用。"""
+    images, image_map, seen = [], {}, {}
+    for index, image in enumerate(tree.get('images', [])):
+        key = json.dumps(image, sort_keys=True)
+        if key not in seen:
+            seen[key] = len(images)
+            images.append(image)
+        image_map[index] = seen[key]
+    if 'images' in tree:
+        tree['images'] = images
+    textures, texture_map, seen = [], {}, {}
+    for index, texture in enumerate(tree.get('textures', [])):
+        if 'source' in texture:
+            texture['source'] = image_map[texture['source']]
+        key = json.dumps(texture, sort_keys=True)
+        if key not in seen:
+            seen[key] = len(textures)
+            textures.append(texture)
+        texture_map[index] = seen[key]
+    if 'textures' in tree:
+        tree['textures'] = textures
+    for material in tree.get('materials', []):
+        for container in (material, material.get('pbrMetallicRoughness', {})):
+            for key in ('baseColorTexture', 'metallicRoughnessTexture', 'normalTexture',
+                        'occlusionTexture', 'emissiveTexture'):
+                if key in container:
+                    container[key]['index'] = texture_map[container[key]['index']]
+
+
+def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis='-y', method='provided-mesh', license_name='unknown', resolution=384, provenance=None, vertex_color_space="auto", orientation_matrix=None, material_mode='vertex-color', texture_max_size=256):
+    if material_mode not in ('vertex-color', 'preserve-pbr'):
+        raise ValueError('材质模式仅支持vertex-color、preserve-pbr')
+    if (not isinstance(texture_max_size, int) or isinstance(texture_max_size, bool)
+            or not 32 <= texture_max_size <= 2048):
+        raise ValueError('贴图最大尺寸需要32到2048之间的整数')
     import trimesh
     meshes, alignment = normalized_meshes(mesh_path, up_axis, front_axis, vertex_color_space, orientation_matrix)
     if alignment['triangles'] > 250000:
-        raise ValueError('三角面超过250000，请在推理阶段降低marching-cubes分辨率或明确简化网格后重试')
+        raise ValueError('三角面超过250000，请明确简化源网格后重试')
     def neutral_materials(tree):
         tree["materials"] = [{"name": "家具中性粗糙材质", "pbrMetallicRoughness": {"baseColorFactor": [1, 1, 1, 1], "metallicFactor": 0, "roughnessFactor": .8}, "doubleSided": True}]
         for mesh in tree.get("meshes", []):
             for primitive in mesh.get("primitives", []):
                 primitive["material"] = 0
-    glb = trimesh.exchange.gltf.export_glb(trimesh.Scene(meshes), include_normals=True, tree_postprocessor=neutral_materials)
+    export_meshes, texture_records = meshes, []
+    if material_mode == 'preserve-pbr':
+        export_meshes, texture_records = pbr_export_meshes(mesh_path, meshes, alignment, texture_max_size)
+        alignment['colorMode'] = 'source-pbr-uv-materials;top-view-linear-vertex-colors'
+    alignment['materialMode'] = material_mode
+    glb = trimesh.exchange.gltf.export_glb(trimesh.Scene(export_meshes), include_normals=True,
+                                        tree_postprocessor=neutral_materials if material_mode == 'vertex-color' else deduplicate_material_images)
     top = render_top_view(meshes, resolution)
     info = copy.deepcopy(provenance or {})
     info.update({
@@ -180,8 +402,12 @@ def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis=
         'sourceImageName': Path(image_path).name,
         'sourceMeshSha256': hashlib.sha256(Path(mesh_path).read_bytes()).hexdigest(),
         'sourceMeshName': Path(mesh_path).name,
-        'geometryNotice': '几何来自所附网格；照片重建的不可见面属于推测，最终尺寸来自用户输入或类别估计，不能视为原款精确测量。',
-        'colorNotice': '首版将原始纹理采样为顶点色，细纹理会简化。',
+        'geometryNotice': '几何来自所附网格；库模型只代表所选近似款，照片不可见的结构未经确认。最终尺寸来自规格、用户输入或声明的估计，不能视为照片实测或原款精确复刻。',
+        'colorNotice': ('3D保留源PBR/UV，贴图按记录缩小；2D仍为同几何顶点采样图，不保留全部细纹理。'
+                        if material_mode == 'preserve-pbr' else '原始纹理采样为顶点色，细纹理会简化。'),
+        'materialProcessing': {'mode': material_mode, 'textureMaxSize': texture_max_size,
+                               'textureResizes': texture_records,
+                               'topViewMode': 'same-geometry-vertex-color-sampling'},
     })
     if orientation_matrix is not None:
         info['orientation'] = {'mode': alignment['orientationMode'], 'rotation': alignment['sourceToCanonicalRotation'], 'evidence': alignment['orientationEvidence']}
@@ -222,6 +448,8 @@ def main():
     p.add_argument('--front-axis', choices=['+x', '-x', '+y', '-y', '+z', '-z'], default='-y')
     p.add_argument('--orientation-matrix', help='有evidence依据的3×3纯旋转JSON，覆盖上轴/正面轴选项')
     p.add_argument('--vertex-color-space', choices=['auto', 'srgb', 'linear'], default='auto')
+    p.add_argument('--material-mode', choices=['vertex-color', 'preserve-pbr'], default='vertex-color')
+    p.add_argument('--texture-max-size', type=int, default=256)
     p.add_argument('--method', default='provided-mesh')
     p.add_argument('--license', default='unknown')
     p.add_argument('--resolution', type=int, default=384)
@@ -245,7 +473,7 @@ def main():
                 raise ValueError('俯视分辨率需为32～1024')
             provenance = json.loads(Path(args.provenance_json).read_text()) if args.provenance_json else None
             orientation = json.loads(Path(args.orientation_matrix).read_text()) if args.orientation_matrix else None
-            asset, report = prepare(args.mesh, args.source_image, args.asset_id, args.height_mm, args.up_axis, args.front_axis, args.method, args.license, args.resolution, provenance, args.vertex_color_space, orientation_matrix=orientation)
+            asset, report = prepare(args.mesh, args.source_image, args.asset_id, args.height_mm, args.up_axis, args.front_axis, args.method, args.license, args.resolution, provenance, args.vertex_color_space, orientation_matrix=orientation, material_mode=args.material_mode, texture_max_size=args.texture_max_size)
             write_json(args.output, asset)
             write_json(args.report or str(Path(args.output).with_suffix('.report.json')), report)
             Path(args.output).with_suffix('.top.png').write_bytes(base64.b64decode(asset['topViewDataUrl'].split(',', 1)[1]))

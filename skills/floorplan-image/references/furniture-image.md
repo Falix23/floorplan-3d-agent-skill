@@ -1,104 +1,47 @@
-# 家具照片 → 可编辑模型（开发版）
+# 家具照片 → 可编辑模型替换
 
-此模式将单件家具的照片变成可替换资产，再绑定到已有户型中的指定家具；生成资产不等于改造户型。交付资产 JSON、原始重建网格与过程记录、更新后的计划和 HTML，以及实际页面的 2D/3D 核验结果。
+由Agent实际查看家具照片，识别可见结构，选择合法近似库模型或用户网格，再适配并替换已有户型中的指定实例。床、椅、桌、沙发等类别使用同一路由；交付含资产的完整计划、HTML和实际验收记录。无需额外模型推理或权重，无法匹配时保留原家具。
 
 ## 先确认要替换什么
 
-实际查看照片及目标户型，确定家具实例 ID、语义类别、可见外观与正面方向。图片中若有多件家具，先定位目标；保留原图及裁剪/抠图记录。背景、地面阴影和周围物品不能当作家具几何。整张室内照片不适合作为单件模型的直接输入。
+实际查看照片及目标户型，确认家具实例ID、类别、可见部件与朝向。室内随拍可以作为参考：先定位目标，保留完整原图及任何辅助裁切记录；背景、阴影和其他家具不属于目标网格。选择与许可核对见 [模型库检索与适配](furniture-retrieval.md)。
 
-已有家具的中心、旋转与宽深默认保留，只替换外观。用户要求换尺寸时才改变占地。宽、深、高优先采用产品规格或用户给出的尺寸；单张透视照片不能独立量出真实尺寸，无依据时记录为估计，并在会影响可用性的关键尺寸缺失时询问用户。不要根据照片的像素长宽直接确定家具宽深。
+默认保留当前中心与朝向；同形外观替换先保留占地。换尺寸或改变形状时，按产品规格、用户尺寸或明确声明的原生比例工作尺度调整，记录依据并重新检查贴墙与布局。单张透视照的像素长宽不能当作真实宽深高；关键尺寸未知且无法判断是否放得下时，保留原家具并说明缺少的信息。
 
-记录未知项：遮挡、背面和底部不可见结构、材质/颜色受光照影响、尺度依据、近似朝向。类别仍映射为目录中的 `type`，资产外观通过 `assetId` 引用，不用新的模糊类别取代语义。
+记录遮挡、不可见背面/底部、材质光照影响与尺度不确定性。资产通过 `assetId` 引用，类别仍使用目录 `type`；真实形状变化时同步采用相符类别，例如方桌→圆桌使用 `roundtable`，不能靠类型标签代替几何。
 
-## 生成真实网格
+## 选择模型来源
 
-优先使用用户已经提供且来源清楚的 GLB/OBJ 等静态网格；只有照片时，使用开源单图重建方法。首个接入后端是 [TripoSR 官方仓库](https://github.com/VAST-AI-Research/TripoSR) 及 [官方权重](https://huggingface.co/stabilityai/TripoSR)。其官方说明将代码和权重按 MIT 开放；输入照片和其他网格的使用条件仍须另行记录。
-
-在独立环境中按官方安装说明运行推理，保留实际命令、代码 commit、权重 revision/hash、输入图 hash、预处理方式和生成结果。GPU/依赖安装与执行位置遵循当前项目约定，不要求所有用户都有相同机器。HTML 不会自行下载权重或调用重建服务。
-
-### 图片重建编排入口
-
-在安装好官方 TripoSR 依赖的隔离 Python 中运行随 Skill 提供的 `scripts/image_to_furniture.py`。`--triposr-root` 指向包含官方 `run.py` 的源码目录；`--weights` 指向本地 `config.yaml` 和 `model.ckpt` 所在目录。此脚本不自动安装环境或下载权重；缺少前置条件时先按官方文档准备，不改动项目已有的系统 Python。
-
-先核对当前家具 ID 与尺寸依据。将下面变量改为本次实际路径与已核实的版本；`TRIPOSR_CODE_REVISION` 可由源码仓库的 `git rev-parse HEAD` 核对，权重 revision 取自实际下载记录。照片许可单独填写，不用 MIT 代替未知图源许可。
-
-```sh
-FURNITURE_PYTHON="/path/to/triposr-venv/bin/python"
-FLOORPLAN_SKILL="/path/to/skills/floorplan-image"
-TRIPOSR_CODE="/path/to/TripoSR"
-TRIPOSR_WEIGHTS="/path/to/local-weights"
-FURNITURE_IMAGE="/path/to/furniture.png"
-FURNITURE_PLAN="/path/to/plan.json"
-FURNITURE_OUTPUT="/path/to/new-empty-output"
-TRIPOSR_CODE_REVISION="actual-code-commit"
-TRIPOSR_MODEL_REVISION="actual-model-revision"
-FURNITURE_IMAGE_LICENSE="unknown"
-
-"$FURNITURE_PYTHON" "$FLOORPLAN_SKILL/scripts/image_to_furniture.py" \
-  --image "$FURNITURE_IMAGE" \
-  --triposr-root "$TRIPOSR_CODE" --weights "$TRIPOSR_WEIGHTS" \
-  --asset-id A_CHAIR_01 --height-mm 900 \
-  --plan "$FURNITURE_PLAN" --item-id I_CHAIR \
-  --code-revision "$TRIPOSR_CODE_REVISION" \
-  --model-revision "$TRIPOSR_MODEL_REVISION" \
-  --image-license "$FURNITURE_IMAGE_LICENSE" \
-  --background auto --output "$FURNITURE_OUTPUT"
-```
-
-示例中尺寸和家具 ID 需要替换；输出必须是新的空目录，不能覆盖旧推理记录。传入 `--plan` 时必须同时提供 `--item-id`，脚本在启动 GPU 前检查该家具存在。原计划文件不会被修改。
-
-**首次不要猜 `--front-axis`。**省略它时脚本只重建原始网格，`run.json` 的状态为 `needs_alignment`；这不是替换完成，不应把旧参数模型的页面当作结果。查看 `reconstruction/0/mesh.glb`，确认上轴及靠背/正面后，继续下节的 `prepare → attach → build`，无需重跑推理。从 `run.json` 将代码/权重版本、权重 hash、图源使用条件和预处理记录整理成资产 `provenance.json`；不复制 `command`、原始网格绝对路径或其他执行路径。完整命令保留在本次运行的 `run.json` 中。
-
-如果同一输入的模型轴向已经实际核对，可在上面的命令增加 `--up-axis z --front-axis=-x`，一次生成资产；这里 `-x` 仅为参数写法示例，不能直接当作新照片的朝向。提供计划和家具 ID 时进一步生成 `plan.json`、`index.html`。未提供计划时只生成资产，不自动猜应替换哪件家具。代码/权重版本和照片许可无法核实时保持 `unknown` 并报告，不编造来源。
-
-`--background auto` 使用现有透明层，普通不透明图片则调用 `rembg/u2netp`；前景会居中缩放并合成灰底。`--background alpha` 要求已有透明背景；`--background none` 依赖用户已准备好干净灰底、主体比例和留白，不能当作跳过背景检查的捷径。默认网格提取分辨率为128，可用 `--mc-resolution` 在64～256间调整；提高分辨率不保证细节准确，还可能超过资产面数限制。
-
-当前真实照片技术验证使用官方透明椅子样图，图源许可未明确，仅作内部验证；不能据此宣称所有普通 RGB 照片、抠图场景或家具类别都已经实测通过，也不把该样图默认用作公开宣传素材。
-
-本次实际验证的运行组合为 Python 3.10、PyTorch 2.2.0+CUDA 12.1、TripoSR commit `107cefdc244c39106fa830359024f6a2f1c78871`、权重 revision `5b521936b01fbe1890f6f9baed0254ab6351c04a`。权重 `model.ckpt` 的 SHA256 为 `429e2c6b22a0923967459de24d67f05962b235f79cde6b032aa7ed2ffcd970ee`，约 1.68GB。这是一组已跑通的参考组合，不要求升级或替换用户现有可用环境；先检查依赖和 CUDA 是否匹配。此旧版后端实际使用 NumPy 1.x、Transformers 4.35，不能假定任意最新依赖都兼容。
-
-`torchmcubes` 是独立 MPL-2.0 依赖。本次固定 `a9ac95aa329957ba646e7bb057f825f5dfa77f38`；其最新构建默认 C++20，在 CUDA 12.1/GCC9/PyTorch2.2 上需仅将 CMake 的 C++/CUDA 标准改为17并保留补丁。其他工具链先按自身要求判断，不盲目套用此补丁。TripoSR 还需 DINO 的架构 `config.json`（`facebook/dino-vitb16`，本次 revision `f205d5d8e640a89a2b8ef0369670dfc37cc07fc2`）；其已训练权重在 TripoSR checkpoint 中，无需重复下载整套 DINO 权重。离线运行时先缓存配置，再设置 Hugging Face/Transformers 的离线环境变量。
-
-使用真正 Git checkout 时从该仓库读取 commit；若用源码归档，应显式记录归档对应的 commit/hash，不能在不含 `.git` 的子目录运行 `git rev-parse` 并误把父级项目的 commit 当成 TripoSR 版本。环境、依赖锁定和修改补丁与重建产物一起保留。
-
-自动抠图只能作为候选预处理，Agent 必须实际查看原图与准备图，特别检查椅背、座面和支腿之间的镂空。测试已发现白底椅子的细小空隙会被 rembg 填成前景，整体遮罩重合较高也不能掩盖这个局部拓扑错误。质量不合格时保留原家具，优先使用透明背景图、改进抠图或换更清晰背景；不要把这个中间结果直接送入重建后声称成功。
-
-可先执行不运行GPU的预处理并查看输出：
-
-```sh
-"$FURNITURE_PYTHON" "$FLOORPLAN_SKILL/scripts/furniture_assets.py" preprocess \
-  --source-image "$FURNITURE_IMAGE" --output <output>/preprocessing/input.png
-```
-
-`image_to_furniture.py` 遇到普通不透明RGB并自动抠图时，会停在 `needs_preprocessing_review`，尚未运行重建。Agent 自己完成视觉复核后，可在新的产物目录中给同一原图加上 `--prepared-image <output>/preprocessing/input.png` 继续，原图hash仍保留。这个检查是Agent的处理步骤，不是额外的用户授权流程；无法判断时才说明缺口或请求更合适的图片。预处理通过也不保证单图重建的不可见面准确。
-
-检查推理结果再接入：确认主要轮廓、支腿/扶手/靠背等关键部件、背景是否误入网格、正背面、破洞及悬空结构。单图背面是模型推测；残缺或严重偏离原图时调整抠图/输入视角或改用更适合的开源后端，不用默认参数家具冒充成功结果。模型未运行或失败时保留原家具并报告缺口。
-
-原始网格、预处理图、模型权重和用户照片默认保留在运行产物目录，不提交公开仓库。原照片不会因为生成 GLB 就自动获得其他用途的授权。
+优先使用来源清楚的用户网格；只有照片时按可见结构检索并查看有限候选。缺少关键部件、许可不清或下载不可用时保留原家具，记录原因和可用近似候选；不自动运行模型推理补齐。原图、下载原件、适配文件和运行产物保留在独立输出目录，不加入公开仓库；源码许可不覆盖照片或第三方模型。
 
 ## 预处理资产
 
-仅做已有网格预处理时，可在隔离环境通过 `python -m pip install -r <skill>/scripts/requirements-furniture.txt` 准备依赖。准备 `trimesh`、`Pillow` 等脚本依赖后，先运行 `furniture_assets.py --help` 查看当前参数。根据实际网格确定上轴与正面轴；两轴不能相同，也不能仅凭文件扩展名猜测。预处理器负责检查并统一网格坐标、生成嵌入式 GLB，以及由**同一网格正俯视渲染**的透明 PNG。输入透视照不能充当该 PNG。
+仅做已有网格预处理时，可在隔离环境通过 `python -m pip install -r <skill>/scripts/requirements-furniture.txt` 准备依赖。准备 `trimesh`、`Pillow`、`SciPy` 等纯CPU几何依赖后，先运行 `furniture_assets.py --help` 查看当前参数。根据实际网格确定上轴与正面轴；两轴不能相同，也不能仅凭文件扩展名猜测。预处理器负责检查并统一网格坐标、生成嵌入式 GLB，以及由**同一网格正俯视渲染**的透明 PNG。输入透视照不能充当该 PNG。
 
 ```sh
 python3 <skill>/scripts/furniture_assets.py prepare \
-  --mesh <output>/reconstruction/0/mesh.glb \
+  --mesh <output>/selected-library-model.glb \
   --source-image <output>/furniture-source.png \
-  --asset-id A_CHAIR_01 --height-mm 900 \
+  --asset-id A_FURNITURE --height-mm "$HEIGHT_MM" \
   --up-axis "$UP_AXIS" --front-axis="$FRONT_AXIS" \
-  --method TripoSR --license MIT --vertex-color-space srgb \
+  --method library-retrieval --license "$ASSET_LICENSE" --vertex-color-space auto \
+  --material-mode preserve-pbr --texture-max-size 256 \
   --provenance-json <output>/provenance.json \
-  --output <output>/chair-asset.json
-python3 <skill>/scripts/furniture_assets.py inspect <output>/chair-asset.json
+  --output <output>/asset.json
+python3 <skill>/scripts/furniture_assets.py inspect <output>/asset.json
 ```
 
-`--provenance-json` 可省略；填写时文件须为 JSON 对象，用于补充推理代码/权重版本、源照片链接与使用条件、尺寸依据和不确定项。`method`、`license` 及文件 hash 由本次命令生成，不能仅靠手工写元数据替代真实推理。已有网格的工程自测应如实记录 `inferencePerformed:false`，方法名不能写成并未执行的 TripoSR。
+本流程通过 `--provenance-json` 记录模型来源/许可、照片使用条件、候选取舍、实际改动、尺寸依据及未知项，格式见检索指南。`method`、`license` 及文件hash由命令写入；已有网格打包记录 `inferencePerformed:false`，不把检索、材质适配或格式转换写成图生3D推理。
 
-颜色空间须与真实输入一致：普通规范 GLB/glTF 使用 `--vertex-color-space auto`（默认按 glTF 线性色解释），其他网格默认按 sRGB。TripoSR 原始神经颜色的 GLB 在本链路中明确使用 `--vertex-color-space srgb`；预处理后 GLB 储存线性色、PNG 输出 sRGB，避免同一模型在2D/3D中出现明显亮度偏差。不要为匹配照片而在不知来源时反复切换颜色空间。
+模型库资产优先使用 `--material-mode preserve-pbr`：保留源UV、PBR材质和嵌入纹理，作者法线按完整变换的逆转置处理；不改变网格位置或拓扑。`--texture-max-size` 控制嵌入纹理最长边，默认256，可在32～2048间选择。纹理会被有记录地缩小，不能称无损保留原始分辨率；先检查外观和文件体积，再检查浏览器实际保存结果。保留模式的2D PNG仍由同一几何的颜色采样生成，不包含3D的全部PBR光照与细纹理。
 
-`prepare` 默认输出 384×384 的透明正俯视图；可用 `--resolution` 在 32～1024 间调整。同时保存同名 `.glb`、`.top.png`、`.report.json`，后者包含原始宽深高比例、轴向、归一化包围盒、面数和来源。首版会将原始纹理采样成顶点色，细小花纹和材质细节会损失；应对照实际模型说明，不能宣称完整保留原款贴图。单个资产限制为 GLB 不超过12MiB、俯视 PNG 不超过4MiB、三角面不超过250000；过大时明确降低推理网格密度或进行有记录的简化，不默默截断。图像分辨率限制与浏览器本地存储配额是两回事。
+原本使用顶点色的网格可选 `--material-mode vertex-color`。两种模式都生成自包含GLB与真实正俯视PNG；顶点色会简化纹理，不能把管线损失当作源资产缺陷。
 
-`UP_AXIS`/`FRONT_AXIS` 根据检查结果设置，例如上轴可为 `y` 或 `z`，正面轴可为 `+x/-x/+y/-y/+z/-z`；示例的 900mm 不是从照片测得的高度，应替换为有依据的值或明确声明估计。`--license` 记录所用方法/网格许可，照片来源与使用条件另记在过程记录及 `provenance` 中。
+颜色空间须与真实输入一致：普通规范 GLB/glTF 使用 `--vertex-color-space auto`（默认按 glTF 线性色解释），其他网格默认按 sRGB。只有来源实际表明顶点色是sRGB时才显式使用 `--vertex-color-space srgb`；预处理后 GLB 储存线性色、PNG 输出 sRGB，避免同一模型在2D/3D中出现明显亮度偏差。不要为匹配照片而在不知来源时反复切换颜色空间。
+
+`prepare` 默认输出 384×384 的透明正俯视图；可用 `--resolution` 在 32～1024 间调整。同时保存同名 `.glb`、`.top.png`、`.report.json`，后者包含原始宽深高比例、轴向、归一化包围盒、面数和来源。顶点色模式会损失细纹理；PBR保留模式会按声明的最大尺寸缩小纹理。两者都应对照实际模型说明，不能宣称原款精确贴图。单个资产限制为 GLB 不超过12MiB、俯视 PNG 不超过4MiB、三角面不超过250000；过大时进行有记录的网格简化或纹理缩小，并复核细腿、轮子和占地；不默默截断。图像分辨率限制与浏览器本地存储配额是两回事。
+
+`HEIGHT_MM` 按已说明的尺寸依据填写；`UP_AXIS`/`FRONT_AXIS` 根据检查结果设置，例如上轴为 `y` 或 `z`、正面为 `+x/-x/+y/-y/+z/-z`。`--license` 记录网格许可，照片使用条件另记在 `provenance` 中。
 
 ### 非轴向模型的三轴姿态
 
@@ -117,30 +60,63 @@ python3 <skill>/scripts/furniture_assets.py inspect <output>/chair-asset.json
 
 规范化后的静态网格采用 X=宽、Y=高、Z=深，底部 Y=0，正面朝 +Z、背面朝 -Z；包围盒为 `[-0.5,0,-0.5]` 到 `[0.5,1,0.5]`。浏览器使用家具 `w/height/d` 定义最终尺寸；这是一种外观适配，宽深高分别缩放可能改变原网格比例，应在对照时检查失真。不要用旋转家具实例去掩盖错误的网格轴向。
 
-资产包为一个 JSON 对象，包含 `id`、`format: "glb"`、嵌入 GLB 的 `dataUrl`、正俯视 PNG 的 `topViewDataUrl`、`defaultHeightMm` 和 `provenance`。节点变换须烘焙到顶点（`prepare` 会完成），俯视 PNG 必须可完整解码。不要写本机绝对路径、远程临时链接或依赖旁挂纹理的模型；所有纹理须嵌入 GLB。记录方法、源图 hash、代码/权重版本、已知许可和估计项；不确定项不可写成已测得事实。
+资产包为一个 JSON 对象，包含 `id`、`format: "glb"`、嵌入 GLB 的 `dataUrl`、正俯视 PNG 的 `topViewDataUrl`、`defaultHeightMm` 和 `provenance`。节点变换须烘焙到顶点（`prepare` 会完成），俯视 PNG 必须可完整解码。不要写本机绝对路径、远程临时链接或依赖旁挂纹理的模型；所有纹理须嵌入 GLB。记录来源、作者、文件与源图hash、改动、已知许可和估计项；不确定项不可写成已测得事实。
 
 ## 接入指定家具
 
-先保存原计划，再把资产绑定到指定家具。输出新文件，以便失败时继续使用旧方案。
+Agent完成图像观察、候选取舍和 `prepare` 后，另存识别/匹配证据（也可放入资产 `provenance`），再编写替换清单。事务脚本只处理已准备的本地资产和显式变更，不负责识图、全网搜索或判断是否同款。
 
-```sh
-python3 <skill>/scripts/furniture_assets.py attach \
-  --plan <output>/plan.json --asset <output>/chair-asset.json \
-  --item-id I_CHAIR --output <output>/plan-with-chair.json
-python3 <skill>/scripts/plan_tools.py validate <output>/plan-with-chair.json
-python3 <skill>/scripts/plan_tools.py build <output>/plan-with-chair.json \
-  --output <output>/index.html
+`replacements.json` 的最小示例：其中 `itemId` 必须替换成当前计划中的真实实例ID，`asset` 相对清单文件所在目录解析。
+
+```json
+{
+  "schemaVersion": 1,
+  "replacements": [
+    {
+      "itemId": "I_TARGET",
+      "decision": "replace",
+      "asset": "asset.json",
+      "reason": "可见主体、关键部件和朝向与候选相符；具体差异见资产provenance"
+    },
+    {
+      "itemId": "I_UNCERTAIN",
+      "decision": "keep",
+      "reason": "关键结构被遮挡，没有合适且许可清楚的候选"
+    }
+  ]
+}
 ```
 
-如果输入来自图片还原，推荐先运行 `reconstruct.py from-pixels` 完成并复核建筑，再执行 `attach`。该转换器会透传已有的家具资产表，但资产网格和实例 ID 仍须按本协议核验，不能用资产字段代替位置与类别识别。需要原图叠加时，构建命令继续使用已有的 `--reference-image` 及原标定。
+- `decision: keep` 保留原家具，不绑定候选；无法匹配时用它记录原因。
+- `replace` 可用 `set` 显式修改 `type,name,cx,cy,w,d,height,rot,color,placement`。未填字段保留原值；实例缺少高度时补资产默认高度。尺寸改变必须写 `dimensionsEvidence`，位置、旋转或 `placement` 改变必须写 `placementEvidence`。
+- 按 `prepare` 报告的 `sourceExtents` 尽量统一缩放，注明规格、用户尺寸或工作尺度依据；原生比例失真会报告告警，不能把逐轴拉伸当成照片尺寸恢复。形状改变时同步设置相符的 `type`。
+- 预检使用实际网格投影筛查墙、门和邻近家具。确有用途依据的允许叠放逐对填写 `allowOverlap: [{"with":"I_NEARBY","reason":"明确的叠放用途"}]`；它是近似投影筛查，不是完整3D碰撞或人体工学校验，失败不能靠扩大阈值掩盖。
+- 三角形投影合并所有高度，地毯、桌椅、台面等分层叠放也须逐对写 `allowOverlap` 理由，不按 `type` 自动豁免。局部512栅格在报告中给出 `mmPerPixel`，容差取2mm与一像素对应毫米数的较大值；薄于该误差带的相交记为 `boundary_tolerance` 告警。门仅检查 `rect`，不含门扇完整摆动范围；默认家具按矩形检查。
 
-`furnitureAssets[assetId]` 保存可共享的资产，目标家具增加 `assetId`，并可设置 `height`（mm）。`type`、中心、宽深、朝向、颜色与其他户型数据保留。平面图和 3D 必须引用同一资产、同一占地；完整 JSON 和 HTML 必须携带资产，不仅是模型文件名。字段定义见 [plan-schema.md](plan-schema.md)。
+先预检，再输出到一个**尚不存在的新目录**：
+
+```sh
+python3 <skill>/scripts/replace_furniture.py \
+  --plan plan.json --manifest replacements.json \
+  --output outputs/replacement-case --dry-run
+python3 <skill>/scripts/replace_furniture.py \
+  --plan plan.json --manifest replacements.json \
+  --output outputs/replacement-case
+```
+
+`--plan` 接受裸计划或页面导出的完整JSON；若后者包含拆墙/测量状态，脚本会拒绝，避免丢失状态。此时保留原完整备份，在已有页面选中家具，通过属性面板导入准备好的资产JSON并继续编辑，不重建空状态页面。
+
+`--dry-run` 仅向标准输出返回JSON报告，不写文件。正常成功时原子创建目录，包含 `before.plan.json`、`plan.json`、`index.html`、`replacement-report.json`、`manifest.json` 和 `assets/` 内的选中资产包。输出清单使用包内相对路径，可把整个目录移走后，以 `before.plan.json` 为输入重新运行。批量替换任一失败时返回非零及标准输出报告，不生成输出目录，原计划不变。查看逐实例的变更、警告与失败原因，勿把 `keep` 当作已替换。
+
+输入来自图片还原时，先用 `reconstruct.py from-pixels` 复核建筑，再替换家具。底层单件工具仍提供 `furniture_assets.py attach`，随后可自行校验和构建；批量Agent编排默认使用上述事务命令。
+
+完整计划中的 `furnitureAssets[assetId]` 保存可复用资产，目标家具通过 `assetId` 引用；2D与3D共享网格、占地和朝向。完整JSON与HTML必须携带资产，不仅是本机模型路径。字段见 [plan-schema.md](plan-schema.md)。
 
 ## 在实际页面验收
 
 1. 在 2D 检查同网格的正俯视图、占地框、朝向与贴墙关系；在 3D 的正俯视、斜视检查模型形状和底部落地。对照源照片说明可见相似处与推测部位，不把“加载成功”当成外观还原验收。
 2. 实际移动、旋转、编辑宽深和高度，检查 2D/3D 的中心、方向及占地同步。替换模型后重新检查墙体、门窗与相邻家具碰撞；放大模型不能自动忽略原有通行空间。
-3. 实际撤销/重做替换，导出完整 JSON 后重新导入，再刷新核对资产、位置、尺寸和朝向。模型损坏或加载失败时应保留默认模型并提示失败，不清空家具；用一份损坏资产验证该行为。
+3. 实际撤销/重做家具编辑，导出完整 JSON 后在全新会话导入，再刷新核对资产、位置、尺寸和朝向。模型损坏或加载失败时应保留默认模型并提示失败，不清空家具；用一份损坏资产验证该行为。
 4. 大型嵌入资产可能超过浏览器本地存储配额。核对实际保存提示，出现失败就导出完整 JSON/HTML 作为备份，不能声称刷新一定恢复。资产嵌入不会消除 Three.js/CDN 的运行依赖。
 
-保留实际 HTML 截图、导出重导入的计划和检查记录。浏览器或 GPU 不可用时明确列出未验证步骤，交付已完成部分，不将开发分支当作已发布功能。
+保留实际HTML截图、导出重导入的计划和检查记录；浏览器或资产处理依赖不可用时列出未验证步骤，不宣称已经验收。多件家具合并和直排→L形、方桌→圆桌的对照规则见 [检索指南](furniture-retrieval.md#形状变化对照)。

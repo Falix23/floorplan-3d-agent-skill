@@ -54,7 +54,7 @@
 
 `evidence`、`uncertainties` 等附加 JSON 字段会保留，可记录读到的尺寸、像素观测、置信度。不能把模型自评置信度当作测量精度。
 
-## 照片家具资产（开发版）
+## 照片家具资产
 
 `furnitureAssets` 是可选的资产注册表，以资产 ID 为 key。家具保留目录 `type` 作为语义类别，通过可选 `assetId` 引用资产；可选 `height` 表示该实例的高度（mm），未给出时使用资产的 `defaultHeightMm`。中心、宽深与 `rot` 继续使用上面的定义。
 
@@ -67,9 +67,9 @@
 | `dataUrl` | `data:model/gltf-binary;base64,` 加完整 GLB 编码；纹理须内嵌，无外部资源 URI |
 | `topViewDataUrl` | 同一网格正俯视渲染的透明 PNG，`data:image/png;base64,` 编码 |
 | `defaultHeightMm` | 未指定实例高度时使用的高度；估计须记录依据 |
-| `provenance` | 来源及方法记录，包含 `method`、`sourceImageSha256`、`license` 等；可补代码/权重版本、照片使用条件与不确定项 |
+| `provenance` | 来源及方法记录，包含 `method`、`sourceImageSha256`、`license` 等；记录模型作者/来源、照片使用条件、匹配差异、适配改动与不确定项 |
 
-首版仅支持无动画、无蒙皮、无 glTF 扩展的静态三角网格；GLB 上限12MiB、三角面上限250000，俯视 PNG 上限4MiB。预处理时纹理采样为顶点色，GLB使用线性色、2D PNG使用sRGB；完整原始材质/细纹理不作为已保留能力。`alignment` 为预处理输出的轴向、源比例、归一化包围盒与面数记录，用于复核，不改变家具实例的尺寸权威。
+当前支持无动画、无蒙皮、无 glTF 扩展的静态三角网格；GLB 上限12MiB、三角面上限250000，俯视 PNG 上限4MiB。`prepare --material-mode preserve-pbr` 保留3D源UV/PBR和按记录缩小的嵌入纹理；`vertex-color` 模式简化为线性顶点色。两者的2D PNG均为同几何的顶点颜色采样并输出sRGB，不保留全部细纹理或PBR光照。`alignment` 为预处理输出的轴向、源比例、归一化包围盒与面数记录，用于复核，不改变家具实例的尺寸权威。
 
 网格本地坐标为 X 宽、Y 高、Z 深，背面朝 -Z、正面朝 +Z、底面 Y=0。预处理后的包围盒是 `[-0.5,0,-0.5]` 到 `[0.5,1,0.5]`；浏览器按实例 `w/height/d` 缩放，再按计划中心和 `rot` 放置。2D 图像从相同网格正投影产生，并使用同一宽深与旋转；不得用源照片的透视长宽替代占地。
 

@@ -59,15 +59,30 @@ A pure front-end tool for interior design on a floor plan: place furniture, remo
 - Chinese / English UI toggle (button on the right of the top bar; defaults to Chinese and remembers your choice)
 - Export to PNG, export / import plans as JSON
 
-## Furniture photos and custom assets (development version)
+## Replace furniture with styles you like
 
-The development branch adds an Agent workflow that reconstructs a single furniture photo with an open-source method, prepares an embedded GLB and a top-down 2D image from the same mesh, and replaces a specified furniture item in an existing plan. The local `image_to_furniture.py` wrapper orchestrates [TripoSR](https://github.com/VAST-AI-Research/TripoSR), recording code/model revisions, weight hashes and input provenance; an existing mesh with clear usage rights can also be used. Without an explicitly checked front axis, the wrapper stops at `needs_alignment` after reconstruction, before replacing furniture. This is a development capability, not a released feature.
+Use a furniture photo, including a phone photo with a room background, to replace a selected bed, chair, table, sofa or other supported item in your plan. The Agent inspects visible structure, compares legally usable similar models, adapts orientation, scale and materials, and prepares editable 2D/3D from the same mesh. You can also provide your own lawful mesh. No additional image-to-3D inference, GPU or weights are required. Matching is an approximate substitution; it cannot guarantee an asset for every image or the exact photographed product. If no suitable model is available, the original furniture stays in place.
 
-Use `$floorplan-image` with a clear furniture photo, the current plan, the target item ID and any known product dimensions. The Agent must inspect the actual image and mesh, document inferred dimensions and unseen surfaces, prepare the asset, attach it to the item, then check the real HTML in 2D and 3D. A perspective photo is not a floor-plan footprint, and a generic parametric model is not a successful photo reconstruction.
+Example prompt with a new photo and your existing plan:
 
-Assets are stored in `plan.furnitureAssets`; furniture keeps its semantic `type` and references `assetId`, with an optional `height` in mm. The model, top-view image and provenance travel with the complete JSON/HTML. Width, depth, height, position and rotation remain editable. The first asset-preparation version samples textures into vertex colors, so fine texture detail is simplified. Separate-axis fitting can also distort proportions and must be checked visually. Large embedded assets may exceed browser storage quotas, so keep the complete JSON/HTML backup and check the actual save result.
+> Use $floorplan-image to find the specified room/item in my plan.json and replace it based on this phone photo. Inspect the image, compare licensed candidates and explain differences. Adapt using product dimensions or a declared uniform working scale, run a dry run, then apply the replacement transaction. Deliver editable HTML, complete JSON, sources and differences, and verify moving, rotating, size/height edits, undo, export/import and reload. Keep items that cannot be matched unchanged.
 
-The basic plan builder uses Python's standard library. Optional asset preparation requires `trimesh`, `Pillow` and related dependencies; image-to-3D inference runs in a separate environment. The HTML does not run reconstruction or store API keys. Keep input photos, model weights and generated files out of public commits. Method/model licenses and photo usage rights are recorded separately. See the [furniture workflow](skills/floorplan-image/references/furniture-image.md) and [asset schema](skills/floorplan-image/references/plan-schema.md).
+After the Agent prepares local assets and a manifest, use the batch entry point:
+
+```bash
+python3 skills/floorplan-image/scripts/replace_furniture.py \
+  --plan plan.json --manifest replacements.json --output outputs/replacement-case --dry-run
+python3 skills/floorplan-image/scripts/replace_furniture.py \
+  --plan plan.json --manifest replacements.json --output outputs/replacement-case
+```
+
+The script does not perform vision or search the web. A dry run only prints a JSON report. A successful transaction atomically creates a new, previously nonexistent directory containing before/after plans, embedded-asset HTML, a replacement report, a replayable manifest and its prepared assets. If any replacement fails, no output directory is created and the input plan is unchanged. Each manifest entry chooses `replace` or `keep`; dimension and placement changes require evidence. Mesh projection screens walls, doors and neighboring items, with pair-specific reasons for allowed overlaps. This approximate screen is not full 3D collision or ergonomic validation. Full exports with demolition or measurement state must use the existing page's asset import instead; the batch script rejects them rather than silently losing that state.
+
+Prepare real meshes with `furniture_assets.py prepare --material-mode preserve-pbr --texture-max-size 256`. Assets are embedded in `plan.furnitureAssets`, referenced by `assetId`, and share geometry, footprint and orientation between 2D and 3D. PBR texture resizing and 2D color sampling simplify detail; hidden structure and unmarked photo dimensions remain unknown or estimated. Verify editing, undo, complete JSON export, import in a fresh session and reload in the actual HTML. If browser storage fails, retain complete JSON/HTML backups.
+
+Keep user images, downloaded originals and generated artifacts in a private output directory, outside public commits. Record photo permissions, model licenses, authors, file hashes and adaptations separately; an asset's license does not cover the reference photo.
+
+See the [furniture workflow](skills/floorplan-image/references/furniture-image.md), [retrieval guide](skills/floorplan-image/references/furniture-retrieval.md) and [asset schema](skills/floorplan-image/references/plan-schema.md).
 
 ## Quick Start
 
@@ -111,15 +126,14 @@ python3 -m http.server 8000
 
 ## Customizing the Floor Plan
 
-The floor plan data lives in `index.html`:
+Use a complete plan JSON for your own geometry and furniture; the root `index.html` remains an editable demo. In the page, **File → Edit plan data** edits rooms, walls and openings, while furniture controls edit position, rotation and dimensions. Save and reload the complete plan through the file menu.
 
-- `ROOMS`: room polygons, names, and default floor materials
-- `WALLS` / `WINS`: walls and window openings
-- `MATS`: floor material names and unit prices
-- `LIB`: furniture library (type, name, default size, color)
-- `buildFurniture()`: 3D models for each furniture type
+```bash
+python3 skills/floorplan-image/scripts/plan_tools.py validate examples/two-room.json
+python3 skills/floorplan-image/scripts/plan_tools.py build examples/two-room.json --output outputs/two-room.html
+```
 
-Edit this data to use your own floor plan.
+See the [plan schema](skills/floorplan-image/references/plan-schema.md) for complete geometry and embedded furniture assets.
 
 ## Social Media
 
