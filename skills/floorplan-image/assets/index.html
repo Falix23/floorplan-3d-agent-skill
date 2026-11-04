@@ -222,6 +222,8 @@ main.drawer-panel #fab{opacity:0;visibility:hidden}
 </script>
 </head>
 <body>
+<div id="storageNotice" role="status" hidden style="position:fixed;left:12px;right:12px;bottom:58px;z-index:110;background:#fff3d6;color:#704516;border:1px solid #c9a15f;padding:12px;border-radius:9px;font:13px/1.5 system-ui"></div>
+<div id="assetNotice" role="status" hidden style="position:fixed;left:12px;right:12px;bottom:112px;z-index:109;background:#fff0eb;color:#803e29;border:1px solid #c88875;padding:10px;border-radius:9px;font:13px/1.5 system-ui"></div>
 <div class="app">
   <header>
     <div class="grp" id="paneBtns">
@@ -577,6 +579,74 @@ function fixState(s){
   return s;
 }
 
+// 家具资产只使用内嵌资源，不访问外部模型文件。
+function furnitureAssetBytes(dataUrl){
+  if(typeof dataUrl!=='string'||!/^data:model\/gltf-binary;base64,[A-Za-z0-9+/]+={0,2}$/.test(dataUrl))throw new Error('家具模型需要内嵌 GLB dataUrl');
+  const encoded=dataUrl.slice(dataUrl.indexOf(',')+1);
+  if(encoded.length>16*1024*1024)throw new Error('单个家具 GLB 超过12MB，请先简化模型');
+  let raw;try{raw=atob(encoded);}catch(e){throw new Error('家具 GLB base64 无效');}
+  const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0)),v=new DataView(bytes.buffer);
+  if(bytes.length<28||v.getUint32(0,true)!==0x46546c67||v.getUint32(4,true)!==2||v.getUint32(8,true)!==bytes.length)throw new Error('家具 GLB 头部或长度无效');
+  const length=v.getUint32(12,true);
+  if(v.getUint32(16,true)!==0x4e4f534a||length%4||20+length>bytes.length)throw new Error('家具 GLB JSON 分块无效');
+  let json;try{json=JSON.parse(new TextDecoder().decode(bytes.slice(20,20+length)).trim());}catch(e){throw new Error('家具 GLB JSON 无效');}
+  if(json.asset?.version!=='2.0')throw new Error('家具模型需要 glTF 2.0');
+  let chunks=20+length,binBytes=0;
+  while(chunks<bytes.length){
+    if(chunks+8>bytes.length)throw new Error('家具 GLB 分块截断');
+    const n=v.getUint32(chunks,true),kind=v.getUint32(chunks+4,true);
+    if(n%4||chunks+8+n>bytes.length||kind!==0x004e4942||binBytes)throw new Error('家具 GLB BIN 分块无效');
+    binBytes=n;chunks+=8+n;
+  }
+  const scan=o=>{if(!o||typeof o!=='object')return;for(const [k,value]of Object.entries(o)){if(k==='uri')throw new Error('家具 GLB 不允许外部或脚本资源 URI；请打包为自包含 GLB');if(k==='EXT_meshopt_compression'||k==='KHR_draco_mesh_compression'||k==='KHR_texture_basisu')throw new Error('家具 GLB 请先解压为普通网格和PNG/JPEG贴图');scan(value);}};
+  scan(json);
+  if((json.extensionsUsed||[]).length||(json.extensionsRequired||[]).length||(json.animations||[]).length||(json.skins||[]).length)throw new Error('家具资产只支持无扩展、无骨骼和无动画的静态网格');
+  for(const image of json.images||[])if(!Number.isInteger(image.bufferView)||!['image/png','image/jpeg'].includes(image.mimeType))throw new Error('家具GLB贴图仅支持内嵌PNG/JPEG');
+  for(const mesh of json.meshes||[])for(const primitive of mesh.primitives||[])if(primitive.mode!==undefined&&primitive.mode!==4)throw new Error('家具GLB仅支持三角网格');
+  if(!Array.isArray(json.buffers)||json.buffers.length!==1||!Number.isInteger(json.buffers[0].byteLength)||json.buffers[0].byteLength>binBytes||!binBytes)throw new Error('家具 GLB 缺少内嵌几何缓冲区');
+  if(!Array.isArray(json.meshes)||!json.meshes.length)throw new Error('家具 GLB 没有网格');
+  for(const view of json.bufferViews||[])if(view.buffer!==0||!Number.isInteger(view.byteLength)||view.byteLength<=0||!Number.isInteger(view.byteOffset||0)||(view.byteOffset||0)<0||(view.byteOffset||0)+view.byteLength>json.buffers[0].byteLength)throw new Error('家具GLB缓冲区范围无效');
+  let triangles=0;
+  for(const mesh of json.meshes){if(!Array.isArray(mesh.primitives)||!mesh.primitives.length)throw new Error('家具GLB缺少三角网格');for(const primitive of mesh.primitives){
+    const position=json.accessors?.[primitive.attributes?.POSITION],indices=primitive.indices===undefined?null:json.accessors?.[primitive.indices];
+    if(!position||position.type!=='VEC3'||position.componentType!==5126||!Number.isInteger(position.count)||position.count<=0)throw new Error('家具GLB顶点属性无效');
+    const count=indices?.count??(primitive.indices===undefined?position.count:0);
+    if(!Number.isInteger(count)||count<=0||count%3)throw new Error('家具GLB三角索引数量无效');
+    triangles+=count/3;if(triangles>250000)throw new Error('家具GLB超过250000个三角面，请先简化模型');
+  }}
+  return bytes;
+}
+function validateFurnitureAsset(a,key){
+  const finite=n=>typeof n==='number'&&Number.isFinite(n);
+  if(!a||typeof a!=='object'||Array.isArray(a)||typeof a.id!=='string'||!/^[A-Za-z][A-Za-z0-9_-]*$/.test(a.id)||(key!==undefined&&a.id!==key)||a.format!=='glb')throw new Error('家具资产 id 或 format 无效');
+  if(!finite(a.defaultHeightMm)||a.defaultHeightMm<1||a.defaultHeightMm>10000)throw new Error('家具资产 defaultHeightMm 需要在1～10000mm之间');
+  if(typeof a.topViewDataUrl!=='string'||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(a.topViewDataUrl)||a.topViewDataUrl.length>Math.ceil(4*1024*1024/3)*4+22)throw new Error('家具俯视图需要内嵌 PNG（不超过4MB）');
+  let top;try{top=atob(a.topViewDataUrl.slice(22));}catch(e){throw new Error('家具俯视图编码无效');}
+  if(top.length<24||[137,80,78,71,13,10,26,10].some((v,i)=>top.charCodeAt(i)!==v))throw new Error('家具俯视图不是有效 PNG');
+  const topView=new DataView(Uint8Array.from(top.slice(16,24),c=>c.charCodeAt(0)).buffer);
+  if(!topView.getUint32(0)||!topView.getUint32(4)||topView.getUint32(0)>2048||topView.getUint32(4)>2048)throw new Error('家具俯视图尺寸需要在1～2048px之间');
+  if(!a.provenance||typeof a.provenance!=='object'||Array.isArray(a.provenance)||typeof a.provenance.method!=='string'||!a.provenance.method.trim()||typeof a.provenance.license!=='string'||!a.provenance.license.trim()||typeof a.provenance.sourceImageSha256!=='string'||!/^([A-Fa-f0-9]{64})$/.test(a.provenance.sourceImageSha256))throw new Error('家具资产需要 provenance.method、license与sourceImageSha256来源记录');
+  furnitureAssetBytes(a.dataUrl);
+  return a;
+}
+async function attachFurnitureAsset(furnitureId,asset){
+  validateFurnitureAsset(asset);
+  const startedPlan=state.plan,startedFurniture=getF(furnitureId);
+  if(!startedFurniture)throw new Error('待替换家具不存在');
+  if(!window.View3D?.validateAssetModel)throw new Error('3D引擎仍在加载或加载失败，请联网并稍后导入资产');
+  await window.View3D.validateAssetModel(asset);
+  if(state.plan!==startedPlan||getF(furnitureId)!==startedFurniture)throw new Error('加载期间方案或目标家具已变化，请重新选择后导入');
+  const candidate=exportPlan(),f=candidate.furniture.find(f=>f.id===furnitureId);
+  if(!f)throw new Error('待替换家具不存在');
+  candidate.furnitureAssets=candidate.furnitureAssets||{};
+  if(Object.prototype.hasOwnProperty.call(candidate.furnitureAssets,asset.id)&&JSON.stringify(candidate.furnitureAssets[asset.id])!==JSON.stringify(asset))throw new Error('资产 id 已存在且内容不同，请使用新的资产 id');
+  candidate.furnitureAssets[asset.id]=JSON.parse(JSON.stringify(asset));f.assetId=asset.id;f.height=f.height??asset.defaultHeightMm;validatePlan(candidate);
+  mutate(()=>{state.plan.furnitureAssets=candidate.furnitureAssets;const target=getF(furnitureId);target.assetId=asset.id;target.height=f.height;});
+}
+function restoreFurnitureAsset(furnitureId){
+  if(!getF(furnitureId))throw new Error('家具不存在');
+  mutate(()=>{const f=getF(furnitureId);delete f.assetId;delete f.height;});
+}
 function validatePlan(p){
   const fail=m=>{throw new Error(m);};
   const num=n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=10000000;
@@ -619,10 +689,14 @@ function validatePlan(p){
   }
   for(const d of p.slides)if(!rect(d.rect)||typeof d.v!=='boolean')fail('推拉门数据无效');
   for(const o of [...p.windows,...p.doors.map(d=>d.rect),...p.slides.map(d=>d.rect)])if(p.walls.some(w=>overlap(o,w)))fail('门窗洞口被实体墙覆盖，请切开墙段');
+  if(p.furnitureAssets!==undefined&&(!p.furnitureAssets||typeof p.furnitureAssets!=='object'||Array.isArray(p.furnitureAssets)))fail('furnitureAssets 必须是资产对象表');
+  for(const [key,a]of Object.entries(p.furnitureAssets||{}))validateFurnitureAsset(a,key);
   const types=new Set(LIB.flatMap(c=>c.items.map(i=>i[0])));ids.clear();
   for(const f of p.furniture){
     if(!token(f.id)||ids.has(f.id)||!types.has(f.type)||typeof f.name!=='string'||![f.cx,f.cy,f.w,f.d,f.rot].every(num)||f.w<=0||f.d<=0)fail('家具 id、类型或尺寸无效');
     if(f.color&&!/^#[0-9a-fA-F]{6}$/.test(f.color))fail('家具颜色需要 #RRGGBB');ids.add(f.id);
+    if(f.assetId!==undefined&&(typeof f.assetId!=='string'||!Object.prototype.hasOwnProperty.call(p.furnitureAssets||{},f.assetId)))fail('家具 assetId 没有对应资产');
+    if(f.height!==undefined&&(!num(f.height)||f.height<1||f.height>10000))fail('家具高度需要在1～10000mm之间');
   }
   if(p.reference?.dataUrl){
     const r=p.reference;
@@ -650,7 +724,7 @@ function exportPlan(){
 function loadPlan(p){
   validatePlan(p);const b=snap();state=planState(p);ui.sel=null;ui.mA=null;commit(b,true);renderAll();fitView();
 }
-window.Floorplan={validatePlan,loadPlan,exportPlan,getState:()=>JSON.parse(snap())};
+window.Floorplan={validatePlan,validateFurnitureAsset,attachFurnitureAsset,restoreFurnitureAsset,loadPlan,exportPlan,getState:()=>JSON.parse(snap()),persistence:()=>({...persistenceStatus})};
 
 const PX_MM = 25.4 / 96;                       // 1 CSS px = 0.2646 mm
 const COARSE = matchMedia('(pointer:coarse)').matches;   // iPad / 手机等触屏为主的设备
@@ -668,7 +742,12 @@ const ui = {tool:'select', sel:null, mA:null, mCur:null,
 let view = {x0:0, y0:0, s:.06};
 const undoStack = [], redoStack = [];
 
-function save(){ try { localStorage.setItem(STORE, JSON.stringify(state)); } catch(e) {} }
+const persistenceStatus={saved:true,error:null};
+function save(){
+  const notice=$('#storageNotice');
+  try{localStorage.setItem(STORE,JSON.stringify(state));persistenceStatus.saved=true;persistenceStatus.error=null;notice.hidden=true;return true;}
+  catch(e){persistenceStatus.saved=false;persistenceStatus.error=String(e.message||e);notice.textContent=tr('当前修改未保存到浏览器缓存（可能超出容量）。页面仍可编辑；离开前请通过「文件 → 导出 JSON」保存完整家具模型。','Changes could not be saved in browser storage. Keep this page open and export JSON before leaving to preserve the embedded furniture models.');notice.hidden=false;return false;}
+}
 const snap = () => JSON.stringify(state);
 function releasePlacement(f){if(f.placement?.mode==='wall')f.placement={mode:'free',previousWall:f.placement,reason:'用户手动调整位置、尺寸或朝向'};}
 function releaseEditedPlacements(before){
@@ -676,7 +755,7 @@ function releaseEditedPlacements(before){
   const old=new Map(before.furniture.map(f=>[f.id,f]));
   for(const f of state.furniture){const o=old.get(f.id);if(o&&['cx','cy','w','d','rot'].some(k=>Math.abs(o[k]-f[k])>1e-6))releasePlacement(f);}
 }
-function commit(before,preservePlacement=false){if(!preservePlacement)releaseEditedPlacements(JSON.parse(before)); undoStack.push(before); if (undoStack.length > 150) undoStack.shift(); redoStack.length = 0; save(); }
+function commit(before,preservePlacement=false){if(!preservePlacement)releaseEditedPlacements(JSON.parse(before)); undoStack.push(before); let bytes=undoStack.reduce((n,s)=>n+s.length,0);while(undoStack.length>1&&(undoStack.length>150||bytes>32*1024*1024))bytes-=undoStack.shift().length; redoStack.length = 0; save(); }
 function mutate(fn){ const b = snap(); fn(); commit(b); renderAll(); }
 function undo(){ if (!undoStack.length) return toast(tr('没有可撤销的操作', 'Nothing to undo')); redoStack.push(snap()); state = JSON.parse(undoStack.pop()); validateSel(); save(); renderAll(); }
 function redo(){ if (!redoStack.length) return; undoStack.push(snap()); state = JSON.parse(redoStack.pop()); validateSel(); save(); renderAll(); }
@@ -833,6 +912,11 @@ function furnSVG(t,w,d,c,style={}){
 
 /* ======================= 渲染 ======================= */
 const NOLABEL = ['plant','floorlamp','sidetable','barstool','beanbag'];
+const furniturePreviewErrors=new Map();
+function furnitureAssetError(f){
+  const a=state.plan.furnitureAssets?.[f.assetId];
+  return a?(furniturePreviewErrors.get(a.topViewDataUrl)||window.View3D?.assetLoadError(a.dataUrl,a.topViewDataUrl)||null):null;
+}
 let referenceVisible=false,referenceOpacity=.45;
 function renderReference(){
   const r=state.plan.reference,available=!!r?.dataUrl;
@@ -856,10 +940,20 @@ function renderFurn(){
   g.setAttribute('display', ui.layers.furn ? 'inline' : 'none');
   g.innerHTML = state.furniture.map(f => {
     const fs = Math.max(80, Math.min(170, Math.min(f.w,f.d)*.2));
-    const label = Math.min(f.w,f.d) >= 380 && !NOLABEL.includes(f.type)
+    const label = (!f.assetId || furnitureAssetError(f)) && Math.min(f.w,f.d) >= 380 && !NOLABEL.includes(f.type)
       ? `<text transform="rotate(${-f.rot})" font-size="${fs}" text-anchor="middle" dominant-baseline="central" fill="#4a443c" opacity=".8" pointer-events="none">${esc(nm(f.name))}</text>` : '';
-    return `<g class="furn" data-fid="${f.id}" transform="translate(${f.cx} ${f.cy}) rotate(${f.rot})">${furnSVG(f.type,f.w,f.d,f.color,f)}${label}</g>`;
+    return `<g class="furn" data-fid="${f.id}" transform="translate(${f.cx} ${f.cy}) rotate(${f.rot})"><title>${esc(nm(f.name))}</title>${f.assetId&&!furnitureAssetError(f)?`<image data-asset-id="${esc(f.assetId)}" href="${state.plan.furnitureAssets[f.assetId].topViewDataUrl}" x="${-f.w/2}" y="${-f.d/2}" width="${f.w}" height="${f.d}" preserveAspectRatio="none"/>`:furnSVG(f.type,f.w,f.d,f.color,f)}${label}</g>`;
   }).join('');
+  const failed=state.furniture.find(f=>f.assetId&&furnitureAssetError(f)),notice=$('#assetNotice');
+  notice.hidden=!failed;
+  if(failed)notice.textContent=tr('家具模型加载失败，暂时显示默认参数模型：','Furniture asset failed to load; the default parametric model is shown: ')+failed.name+' — '+furnitureAssetError(failed);
+  g.querySelectorAll('image[data-asset-id]').forEach(image=>{
+    const asset=state.plan.furnitureAssets[image.dataset.assetId];
+    image.addEventListener('error',()=>{
+      furniturePreviewErrors.set(asset.topViewDataUrl,'家具俯视PNG无法完整解码，请重新生成俯视图');
+      if(state.furniture.some(f=>f.assetId&&state.plan.furnitureAssets[f.assetId]?.topViewDataUrl===asset.topViewDataUrl))renderFurn();
+    },{once:true});
+  });
 }
 
 function renderWalls(){
@@ -1146,7 +1240,8 @@ function furnPanel(f){
       <label>${tr('中心','Center')} X (mm)<input type="number" id="fX" value="${Math.round(f.cx)}" step="10"></label>
       <label>${tr('中心','Center')} Y (mm)<input type="number" id="fY" value="${Math.round(f.cy)}" step="10"></label>
       <label>${tr('旋转','Rotation')} (°)<input type="number" id="fR" value="${f.rot}" step="15"></label>
-      <label>${tr('颜色','Color')}<input type="color" id="fC" value="${f.color}"></label>
+      <label>${tr('颜色','Color')}<input type="color" id="fC" value="${f.color}" ${f.assetId?'disabled title="图片模型使用自身材质"':''}></label>
+      ${f.assetId?`<label>${tr('模型高度','Model height')} (mm)<input type="number" id="fH" value="${f.height||state.plan.furnitureAssets[f.assetId].defaultHeightMm}" min="1" max="10000" step="10"></label>`:''}
     </div>
     <div class="muted" style="margin-top:8px">${tr('占地面积','Footprint')} ${fmt(f.w*f.d/1e6)} m²</div>
     <div class="actions">
@@ -1154,6 +1249,12 @@ function furnPanel(f){
       <button class="btn" id="aTop">${tr('置于顶层','Bring to front')}</button><button class="btn" id="aBot">${tr('置于底层','Send to back')}</button>
       <button class="btn danger" id="aDel">${tr('删除','Delete')}</button><button class="btn" id="back">${tr('← 返回','← Back')}</button>
     </div></section>
+  <section><h3>${tr('家具模型资产','Furniture model asset')}</h3>
+    <p class="muted">${f.assetId?`${tr('当前资产','Current asset')}: ${esc(f.assetId)} · ${tr('自定义模型，尺寸与来源需复核','Custom model; verify dimensions and source')}`:tr('可由 Agent 匹配或适配已有模型，再替换当前家具。','Ask the Agent to match or adapt an existing model, then replace this item.')}</p>
+    <input type="file" id="fAssetFile" accept="application/json,.json" hidden>
+    <button class="btn" id="fAssetImport">${tr('导入家具资产 JSON','Import furniture asset JSON')}</button>
+    ${f.assetId?`<button class="btn" id="fAssetRestore">${tr('恢复默认模型','Restore default model')}</button>`:''}
+  </section>
   <section class="muted" style="font-size:12px">${tr('拖动家具移动；拖动上方圆点旋转；拖动右下角方块调整尺寸。开启「贴墙吸附」后靠近墙面会自动贴齐。', 'Drag to move; drag the top dot to rotate; drag the bottom-right square to resize. With "Wall snap" on, items snap flush to nearby walls.')}</section>`;
 }
 function bindFurnPanel(f){
@@ -1164,6 +1265,10 @@ function bindFurnPanel(f){
   num('#fD', (g,v) => g.d = Math.max(50, Math.round(v)));
   num('#fX', (g,v) => g.cx = v); num('#fY', (g,v) => g.cy = v); num('#fR', (g,v) => g.rot = norm(v));
   $('#fC').onchange = e => upd(g => g.color = e.target.value);
+  if($('#fH'))num('#fH',(g,v)=>g.height=Math.min(10000,Math.max(1,Math.round(v))));
+  $('#fAssetImport').onclick=()=>$('#fAssetFile').click();
+  $('#fAssetFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>24*1024*1024)throw new Error('资产JSON超过24MB，请先简化模型');const asset=JSON.parse(await file.text());await attachFurnitureAsset(f.id,asset);toast(tr('家具资产已替换；3D加载状态请查看场景。','Furniture asset replaced; check the 3D scene for loading status.'));}catch(err){toast(err.message||'家具资产导入失败');}};
+  if($('#fAssetRestore'))$('#fAssetRestore').onclick=()=>restoreFurnitureAsset(f.id);
   $('#aRot').onclick = () => rotateSel(90);
   $('#aDup').onclick = duplicateSel;
   $('#aDel').onclick = deleteSel;
@@ -1638,6 +1743,7 @@ fitView(); renderAll();
  * ============================================================ */
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {PointerLockControls} from 'three/addons/controls/PointerLockControls.js';
 import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
@@ -2399,8 +2505,10 @@ function buildFurniture(f){
   }
   const content=new THREE.Group();
   while(g.children.length)content.add(g.children[0]);
-  const bounds=new THREE.Box3().setFromObject(content),size=bounds.getSize(new THREE.Vector3()),center=bounds.getCenter(new THREE.Vector3());
+  // 倾斜杆件的局部包围盒会高估占地；按真实顶点拟合，并把最低点落到地面。
+  const bounds=new THREE.Box3().setFromObject(content,true),size=bounds.getSize(new THREE.Vector3()),center=bounds.getCenter(new THREE.Vector3());
   if(size.x>1e-6&&size.z>1e-6){content.scale.x=w/size.x;content.scale.z=d/size.z;content.position.x=-center.x*content.scale.x;content.position.z=-center.z*content.scale.z;}
+  if(Number.isFinite(bounds.min.y))content.position.y=-bounds.min.y;
   g.add(content);
   g.position.set(wx(f.cx), 0, wz(f.cy));
   g.rotation.y = -f.rot * Math.PI/180;       // 平面顺时针旋转 → 绕 Y 轴负向
@@ -2410,7 +2518,7 @@ function buildFurniture(f){
 }
 
 /* ======================= 建筑 ======================= */
-function clearGroup(g){ g.traverse(o => { if (o.geometry) o.geometry.dispose();if(o.material?.userData?.ownedFloor){o.material.map?.dispose();o.material.dispose();} }); g.clear(); }
+function clearGroup(g){g.traverse(o=>{if(o.geometry)o.geometry.dispose();for(const material of (Array.isArray(o.material)?o.material:[o.material])){if(material?.userData?.ownedFloor){material.map?.dispose();material.dispose();}else if(material?.userData?.ownedFurnitureAsset)material.dispose();}});g.clear();}
 function wallBox([x0, y0, x1, y1], yb, yt, m){
   if (yt - yb <= .001) return;
   const o = new THREE.Mesh(new THREE.BoxGeometry(M(x1-x0), yt-yb, M(y1-y0)), m || [wallMat, wallMat, capMat, wallMat, wallMat, wallMat]);
@@ -2490,11 +2598,60 @@ function buildArch(){
 }
 
 function updateOverheadVisibility(){if(furnG)furnG.traverse(o=>{if(o.userData.planOverhead)o.visible=!orthographicPlan;});}
+const furnitureAssetCache=new Map();
+let furnitureBuildGeneration=0;
+const furnitureAssetCacheKey=(dataUrl,topViewDataUrl)=>dataUrl+'\n'+topViewDataUrl;
+function decodeFurnitureTopView(dataUrl){
+  return new Promise((resolve,reject)=>{
+    const image=new Image();
+    image.onload=()=>{if(image.naturalWidth<1||image.naturalHeight<1||image.naturalWidth>2048||image.naturalHeight>2048)reject(new Error('家具俯视PNG解码后尺寸无效'));else resolve();};
+    image.onerror=()=>reject(new Error('家具俯视PNG无法完整解码，请重新生成俯视图'));
+    image.src=dataUrl;
+  });
+}
+function assetTemplate(asset){
+  const key=furnitureAssetCacheKey(asset.dataUrl,asset.topViewDataUrl);
+  let cached=furnitureAssetCache.get(key);
+  if(cached)return cached;
+  cached={status:'loading',error:null,dataUrl:asset.dataUrl,topViewDataUrl:asset.topViewDataUrl};furnitureAssetCache.set(key,cached);
+  cached.promise=Promise.resolve().then(()=>{validateFurnitureAsset(asset);return decodeFurnitureTopView(asset.topViewDataUrl);}).then(()=>new Promise((resolve,reject)=>{
+    let bytes;try{bytes=furnitureAssetBytes(asset.dataUrl);}catch(e){reject(e);return;}
+    new GLTFLoader().parse(bytes.buffer,'',gltf=>{
+      try{
+        const model=gltf.scene,box=new THREE.Box3().setFromObject(model),size=box.getSize(new THREE.Vector3());
+        if(!model||box.isEmpty()||![size.x,size.y,size.z].every(v=>Number.isFinite(v)&&v>0))throw new Error('家具模型没有可见的有限网格');
+        if(Math.max(Math.abs(box.min.x+.5),Math.abs(box.max.x-.5),Math.abs(box.min.y),Math.abs(box.max.y-1),Math.abs(box.min.z+.5),Math.abs(box.max.z-.5))>.002)throw new Error('家具GLB未按协议归一化：X/Z[-0.5,0.5]，Y[0,1]；请先运行资产预处理');
+        cached.status='ready';cached.model=model;resolve(model);
+      }catch(e){reject(e);}
+    },reject);
+  })).catch(e=>{cached.status='error';cached.error=String(e.message||e);throw e;});
+  return cached;
+}
+function cloneFurnitureAsset(template){
+  const copy=template.clone(true);
+  copy.traverse(o=>{if(o.isMesh){o.geometry=o.geometry.clone();const clone=m=>{const v=m.clone();v.userData={...v.userData,ownedFurnitureAsset:true};return v;};o.material=Array.isArray(o.material)?o.material.map(clone):clone(o.material);o.castShadow=o.receiveShadow=true;}});
+  return copy;
+}
 function buildFurn(){
-  clearGroup(furnG);
-  state.furniture.forEach(f => furnG.add(buildFurniture(f)));
+  const generation=++furnitureBuildGeneration;
+  clearGroup(furnG);$('#assetNotice').hidden=true;
+  state.furniture.forEach(f=>{
+    const g=buildFurniture(f);furnG.add(g);
+    if(!f.assetId)return;
+    const asset=state.plan.furnitureAssets[f.assetId];g.userData.assetId=f.assetId;g.userData.assetStatus='loading';
+    const cached=assetTemplate(asset);
+    cached.promise.then(template=>{
+      if(generation!==furnitureBuildGeneration||g.parent!==furnG)return;
+      const content=cloneFurnitureAsset(template);content.scale.set(M(f.w),M(f.height||asset.defaultHeightMm),M(f.d));
+      clearGroup(g);g.add(content);g.userData.assetStatus='ready';selKey=null;
+    }).catch(error=>{
+      if(generation!==furnitureBuildGeneration||g.parent!==furnG)return;
+      g.userData.assetStatus='error';g.userData.assetError=String(error.message||error);renderFurn();
+      const notice=$('#assetNotice');notice.textContent=tr('家具模型加载失败，暂时显示默认参数模型：','Furniture asset failed to load; the default parametric model is shown: ')+f.name+' — '+g.userData.assetError;notice.hidden=false;
+    });
+  });
   updateOverheadVisibility();
-  furnG.visible = opt.furn; selKey = null; applyGrow();
+  furnG.visible=opt.furn;selKey=null;applyGrow();
 }
 
 function buildLabels(){
@@ -2831,8 +2988,10 @@ function shot(){ const a = document.createElement('a'); a.download = tr('户型�
 function relang(){ syncWalkTexts(); if (inited) buildLabels(); }
 
 window.View3D = {
+  validateAssetModel:asset=>assetTemplate(asset).promise.then(()=>true),
+  assetLoadError:(dataUrl,topViewDataUrl)=>{const entry=topViewDataUrl===undefined?[...furnitureAssetCache.values()].find(v=>v.dataUrl===dataUrl&&v.status==='error'):furnitureAssetCache.get(furnitureAssetCacheKey(dataUrl,topViewDataUrl));return entry?.status==='error'?entry.error:null;},
   projectPoint(x,y){if(!inited)return null;const p=new THREE.Vector3(wx(x),.6,wz(y)).project(viewCamera()),r=renderer.domElement.getBoundingClientRect();return {x:r.left+(p.x+1)*r.width/2,y:r.top+(1-p.y)*r.height/2};},
-  diagnostics(){return {projection:orthographicPlan?'orthographic':'perspective',furnitureBounds:inited?furnG.children.map(g=>{const b=new THREE.Box3().setFromObject(g);return {id:g.userData.fid,min:[b.min.x*1000+OX,b.min.z*1000+OY],max:[b.max.x*1000+OX,b.max.z*1000+OY]};}):[]};},
+  diagnostics(){return {projection:orthographicPlan?'orthographic':'perspective',furnitureBounds:inited?furnG.children.map(g=>{const b=new THREE.Box3().setFromObject(g,true);return {id:g.userData.fid,min:[b.min.x*1000+OX,b.min.z*1000+OY],max:[b.max.x*1000+OX,b.max.z*1000+OY],bottomMm:b.min.y*1000,heightMm:(b.max.y-b.min.y)*1000,assetId:g.userData.assetId||null,assetStatus:g.userData.assetStatus||'parametric',assetError:g.userData.assetError||null};}):[]};},
   setPlan(p,x,y){OX=x;OY=y;H=p.height/1000;opt.cut=orthographicPlan ? .18 : H;syncCutBtns();sigArch='';sigLabels='';sigFurn='';if(inited)sync(true);},enter, exit, relang, sync:() => sync(), shot, groundAt, flyToRoom:id => active && !anim && flyToRoom(id), walking:() => active && opt.mode === 'walk'};
 </script>
 <details style="position:fixed;bottom:22px;left:8px;z-index:50;background:#fff;font:11px sans-serif;max-width:90vw"><summary>开源来源 / MIT License</summary><div style="padding:10px;max-height:45vh;overflow:auto"><a href="https://github.com/wy51ai/floorplan-3d" target="_blank" rel="noopener">基于 wy51ai/floorplan-3d · Copyright (c) 2026 wuyi</a><pre style="white-space:pre-wrap">MIT License

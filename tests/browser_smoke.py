@@ -6,6 +6,7 @@ import json
 import threading
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+from browser_runtime import configure_browser_runtime
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location("plan_tools",ROOT/"skills/floorplan-image/scripts/plan_tools.py")
@@ -24,6 +25,7 @@ def run():
         with sync_playwright() as pw:
             browser=pw.chromium.launch(headless=True,args=["--no-sandbox","--use-gl=angle","--use-angle=swiftshader","--enable-webgl","--ignore-certificate-errors"])
             context=browser.new_context(viewport={"width":1500,"height":1000},ignore_https_errors=True,accept_downloads=True)
+            configure_browser_runtime(context)
             page=context.new_page();page.on("pageerror",lambda e:errors.append(str(e)))
             page.goto(url+"/outputs/two-room.html")
             page.wait_for_function("window.Floorplan && document.querySelectorAll('#gRooms polygon.room').length===2")
@@ -93,8 +95,12 @@ def run():
                 c,s=abs(math.cos(math.radians(f['rot']))),abs(math.sin(math.radians(f['rot'])))
                 hw,hh=(f['w']*c+f['d']*s)/2,(f['w']*s+f['d']*c)/2
                 assert abs(b['min'][0]-(f['cx']-hw))<.1,(f,b)
+                assert abs(b['min'][1]-(f['cy']-hh))<.1,(f,b)
+                assert abs(b['max'][0]-(f['cx']+hw))<.1,(f,b)
                 assert abs(b['max'][1]-(f['cy']+hh))<.1,(f,b)
-            checks.append('正交俯视及3D可见模型占地与2D一致')
+                # 包含倾斜椅腿的自制chair夹具，不能用近似包围盒或放宽容差掩盖误差。
+                assert abs(b['bottomMm'])<.1,(f,b)
+            checks.append('正交俯视及3D真实顶点四边占地与2D一致，倾斜椅腿准确落地')
             page.locator('#vIso').click()
             # 3D激活时切换另一户型，标签和家具也应一起重建。
             changed=json.loads(json.dumps(plan));changed['id']='other';changed['height']=3200;changed['furniture'][0].pop('color');changed['rooms'][0]['name']='新方案';changed['furniture']=changed['furniture'][:3]
