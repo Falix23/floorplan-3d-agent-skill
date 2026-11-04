@@ -28,16 +28,38 @@ def axis_vector(axis):
     return value
 
 
-def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto"):
+def validated_orientation(document):
+    """接受有依据的源坐标→家具局部坐标纯旋转，不接受镜像或几何变形。"""
+    import numpy as np
+    if not isinstance(document, dict) or not isinstance(document.get('evidence'), str) or not document['evidence'].strip():
+        raise ValueError('三轴对齐需要JSON对象和非空evidence依据')
+    values = document.get('rotation')
+    if not isinstance(values, list) or len(values) != 3 or any(not isinstance(row, list) or len(row) != 3 for row in values):
+        raise ValueError('rotation需要3×3数值矩阵')
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) for row in values for value in row):
+        raise ValueError('rotation仅接受有限数值')
+    rotation = np.asarray(values, dtype=np.float64)
+    if not np.isfinite(rotation).all():
+        raise ValueError('rotation仅接受有限数值')
+    if not np.allclose(rotation @ rotation.T, np.eye(3), rtol=0, atol=1e-6) or abs(float(np.linalg.det(rotation)) - 1) > 1e-6:
+        raise ValueError('rotation必须为正交且det=+1的纯旋转；不能使用镜像、拉伸或剪切')
+    return rotation, {'rotation': rotation.tolist(), 'evidence': document['evidence'].strip()}
+
+
+def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orientation_matrix=None):
     try:
         import numpy as np
         import trimesh
     except ImportError as exc:
         raise ValueError('prepare需要隔离环境中的numpy、trimesh、Pillow；参阅references/furniture-image.md') from exc
-    up, front = axis_vector(up_axis), axis_vector(front_axis)
-    if abs(float(np.dot(up, front))) > .001:
-        raise ValueError('上轴与正面轴必须正交')
-    rotation = np.stack([np.cross(up, front), up, front])
+    if orientation_matrix is not None:
+        rotation, orientation = validated_orientation(orientation_matrix)
+    else:
+        up, front = axis_vector(up_axis), axis_vector(front_axis)
+        if abs(float(np.dot(up, front))) > .001:
+            raise ValueError('上轴与正面轴必须正交')
+        rotation = np.stack([np.cross(up, front), up, front])
+        orientation = None
     # 资产在离线工具中导入，打包后不再允许任何外部资源URI。
     scene = trimesh.load(str(path), force='scene', process=False)
     meshes = []
@@ -73,8 +95,11 @@ def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto"):
     for mesh in meshes:
         mesh.vertices = (mesh.vertices - origin) / extent
     report = {
-        'sourceUpAxis': up_axis,
-        'sourceFrontAxis': front_axis,
+        'orientationMode': 'explicit_matrix' if orientation is not None else 'cardinal_axes',
+        'sourceUpAxis': None if orientation is not None else up_axis,
+        'sourceFrontAxis': None if orientation is not None else front_axis,
+        'sourceToCanonicalRotation': rotation.tolist(),
+        'orientationEvidence': orientation['evidence'] if orientation is not None else '调用者指定的上轴与正面轴',
         'sourceRotatedBounds': [lower.tolist(), upper.tolist()],
         'sourceExtents': extent.tolist(),
         'sourceAspectRatiosWHoverD': [float(extent[0] / extent[2]), float(extent[1] / extent[2])],
@@ -135,9 +160,9 @@ def render_top_view(meshes, resolution=384):
     return output.getvalue()
 
 
-def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis='-y', method='provided-mesh', license_name='unknown', resolution=384, provenance=None, vertex_color_space="auto"):
+def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis='-y', method='provided-mesh', license_name='unknown', resolution=384, provenance=None, vertex_color_space="auto", orientation_matrix=None):
     import trimesh
-    meshes, alignment = normalized_meshes(mesh_path, up_axis, front_axis, vertex_color_space)
+    meshes, alignment = normalized_meshes(mesh_path, up_axis, front_axis, vertex_color_space, orientation_matrix)
     if alignment['triangles'] > 250000:
         raise ValueError('三角面超过250000，请在推理阶段降低marching-cubes分辨率或明确简化网格后重试')
     def neutral_materials(tree):
@@ -158,6 +183,8 @@ def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis=
         'geometryNotice': '几何来自所附网格；照片重建的不可见面属于推测，最终尺寸来自用户输入或类别估计，不能视为原款精确测量。',
         'colorNotice': '首版将原始纹理采样为顶点色，细纹理会简化。',
     })
+    if orientation_matrix is not None:
+        info['orientation'] = {'mode': alignment['orientationMode'], 'rotation': alignment['sourceToCanonicalRotation'], 'evidence': alignment['orientationEvidence']}
     asset = {'id': asset_id, 'format': 'glb', 'dataUrl': data_url('model/gltf-binary', glb), 'topViewDataUrl': data_url('image/png', top), 'defaultHeightMm': height_mm, 'alignment': alignment, 'provenance': info}
     report = validate_asset(asset)
     return asset, {'ok': True, **report, 'alignment': alignment, 'provenance': info}
@@ -193,6 +220,7 @@ def main():
     p.add_argument('--height-mm', required=True, type=float)
     p.add_argument('--up-axis', choices=['x', 'y', 'z', '-x', '-y', '-z'], default='z')
     p.add_argument('--front-axis', choices=['+x', '-x', '+y', '-y', '+z', '-z'], default='-y')
+    p.add_argument('--orientation-matrix', help='有evidence依据的3×3纯旋转JSON，覆盖上轴/正面轴选项')
     p.add_argument('--vertex-color-space', choices=['auto', 'srgb', 'linear'], default='auto')
     p.add_argument('--method', default='provided-mesh')
     p.add_argument('--license', default='unknown')
@@ -216,7 +244,8 @@ def main():
             if not 32 <= args.resolution <= 1024:
                 raise ValueError('俯视分辨率需为32～1024')
             provenance = json.loads(Path(args.provenance_json).read_text()) if args.provenance_json else None
-            asset, report = prepare(args.mesh, args.source_image, args.asset_id, args.height_mm, args.up_axis, args.front_axis, args.method, args.license, args.resolution, provenance, args.vertex_color_space)
+            orientation = json.loads(Path(args.orientation_matrix).read_text()) if args.orientation_matrix else None
+            asset, report = prepare(args.mesh, args.source_image, args.asset_id, args.height_mm, args.up_axis, args.front_axis, args.method, args.license, args.resolution, provenance, args.vertex_color_space, orientation_matrix=orientation)
             write_json(args.output, asset)
             write_json(args.report or str(Path(args.output).with_suffix('.report.json')), report)
             Path(args.output).with_suffix('.top.png').write_bytes(base64.b64decode(asset['topViewDataUrl'].split(',', 1)[1]))

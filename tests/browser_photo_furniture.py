@@ -179,7 +179,7 @@ def run(args):
                 report["screenshots"].append("actual-2d.png")
                 report["checks"].append("2D使用本次真实网格俯视PNG，完整解码且与嵌入资产匹配")
                 image.click()
-                assert page.locator("#fH").input_value() == str(int(target.get("height",asset["defaultHeightMm"])))
+                assert float(page.locator("#fH").input_value()) == float(target.get("height", asset["defaultHeightMm"]))
                 enter_3d(page)
                 compare_bounds(page, "initial")
                 if page.locator("#back").is_visible():
