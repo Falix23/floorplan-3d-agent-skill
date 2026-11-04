@@ -89,18 +89,23 @@ def run(args):
     single = copy.deepcopy(plan)
     single["id"] = plan["id"] + "-single-chair-inspection"
     single["title"] = "照片家具模型检视台 · 非真实房间"
-    single["rooms"] = [{"id": "MODEL_STAGE", "name": "模型检视台（非真实房间）", "poly": [[-1500,-1500],[1500,-1500],[1500,1500],[-1500,1500]], "mat": "tile800", "at": [0,0]}]
+    height = target.get("height", asset["defaultHeightMm"])
+    dimensions = {"w": target["w"], "d": target["d"], "height": height}
+    size_label = "×".join(f"{dimensions[key]:g}" for key in ("w", "d", "height"))
+    stage_half = max(1500, max(target["w"], target["d"]) * 2)
+    single["rooms"] = [{"id": "MODEL_STAGE", "name": "模型检视台（非真实房间）", "poly": [[-stage_half,-stage_half],[stage_half,-stage_half],[stage_half,stage_half],[-stage_half,stage_half]], "mat": "tile800", "at": [0,0]}]
     single["walls"], single["windows"], single["doors"], single["slides"] = [], [], [], []
     solo = copy.deepcopy(target)
-    solo.update(cx=0, cy=0, rot=0, w=450, d=480, height=900)
+    solo.update(cx=0, cy=0, rot=0, height=height)
     single["furniture"] = [solo]
     single["furnitureAssets"] = {asset_id: asset}
-    single["scale"] = {"status": "estimated", "evidence": "模型检视台450×480×900mm为演示参数，非照片实测；地台不是房间"}
-    single["uncertainties"] = ["单家具外观检视台，不是真实户型。", "450×480×900mm为演示参数；单图不可见面为模型推测。"]
+    single["scale"] = {"status": "estimated", "evidence": f"模型检视台沿用目标家具{size_label}mm声明尺寸；不从照片测量，地台不是房间"}
+    single["uncertainties"] = ["单家具外观检视台，不是真实户型。", f"{size_label}mm沿用目标家具声明尺寸；单图不可见面为模型推测。"]
+    report["inspectionDimensionsMm"] = dimensions
     (demo / "single-chair.plan.json").write_text(json.dumps(single, ensure_ascii=False, indent=2))
     TOOLS.build(single, demo / "single-chair.html")
     text = (demo / "single-chair.html").read_text()
-    notice = '<div style="position:fixed;left:50%;top:152px;transform:translateX(-50%);z-index:80;background:#fffc;padding:6px 14px;border-radius:8px;font:13px sans-serif;pointer-events:none">单家具模型检视台 · 非真实房间 · 450×480×900 mm（演示尺寸）</div>'
+    notice = f'<div style="position:fixed;left:50%;top:152px;transform:translateX(-50%);z-index:80;background:#fffc;padding:6px 14px;border-radius:8px;font:13px sans-serif;pointer-events:none">单家具模型检视台 · 非真实房间 · {size_label} mm（目标尺寸）</div>'
     (demo / "single-chair.html").write_text(text.replace("</body>", notice + "</body>"))
     capture_copy(demo / "single-chair.html", demo / "single-chair-capture.html")
     handler = functools.partial(QuietHandler, directory=str(demo))
@@ -259,9 +264,9 @@ def run(args):
             report["singleChairCamera"]=inspection_page.evaluate("id=>PhotoFurnitureCapture.focus(id)",fid)
             inspection_page.evaluate("()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))")
             inspection_page.locator("#stage").screenshot(path=str(demo/"chair-3d-detail.png"))
-            assert current(inspection_page)["w"]==450 and current(inspection_page)["d"]==480 and current(inspection_page)["height"]==900
+            assert all(current(inspection_page)[key] == value for key, value in dimensions.items())
             report["screenshots"] += ["chair-2d-detail.png","chair-3d-detail.png"]
-            report["checks"].append("单模型检视台使用同一GLB与标准材质光照，仅相机近拍450×480×900mm演示模型")
+            report["checks"].append(f"单模型检视台使用同一GLB与标准材质光照，仅相机近拍{size_label}mm目标模型，未改比例")
             inspection.close();context.close();browser.close()
             assert not report["pageErrors"],report["pageErrors"]
         report["ok"]=True

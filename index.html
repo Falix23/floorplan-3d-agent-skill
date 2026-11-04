@@ -940,9 +940,9 @@ function renderFurn(){
   g.setAttribute('display', ui.layers.furn ? 'inline' : 'none');
   g.innerHTML = state.furniture.map(f => {
     const fs = Math.max(80, Math.min(170, Math.min(f.w,f.d)*.2));
-    const label = Math.min(f.w,f.d) >= 380 && !NOLABEL.includes(f.type)
+    const label = (!f.assetId || furnitureAssetError(f)) && Math.min(f.w,f.d) >= 380 && !NOLABEL.includes(f.type)
       ? `<text transform="rotate(${-f.rot})" font-size="${fs}" text-anchor="middle" dominant-baseline="central" fill="#4a443c" opacity=".8" pointer-events="none">${esc(nm(f.name))}</text>` : '';
-    return `<g class="furn" data-fid="${f.id}" transform="translate(${f.cx} ${f.cy}) rotate(${f.rot})">${f.assetId&&!furnitureAssetError(f)?`<image data-asset-id="${esc(f.assetId)}" href="${state.plan.furnitureAssets[f.assetId].topViewDataUrl}" x="${-f.w/2}" y="${-f.d/2}" width="${f.w}" height="${f.d}" preserveAspectRatio="none"/>`:furnSVG(f.type,f.w,f.d,f.color,f)}${label}</g>`;
+    return `<g class="furn" data-fid="${f.id}" transform="translate(${f.cx} ${f.cy}) rotate(${f.rot})"><title>${esc(nm(f.name))}</title>${f.assetId&&!furnitureAssetError(f)?`<image data-asset-id="${esc(f.assetId)}" href="${state.plan.furnitureAssets[f.assetId].topViewDataUrl}" x="${-f.w/2}" y="${-f.d/2}" width="${f.w}" height="${f.d}" preserveAspectRatio="none"/>`:furnSVG(f.type,f.w,f.d,f.color,f)}${label}</g>`;
   }).join('');
   const failed=state.furniture.find(f=>f.assetId&&furnitureAssetError(f)),notice=$('#assetNotice');
   notice.hidden=!failed;
