@@ -163,7 +163,7 @@ def linear_vertex_colors(visual, vertex_count, path, color_space):
         'vertexColorMultiplierApplied': vertex_multiplier is not None}
 
 
-def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orientation_matrix=None):
+def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orientation_matrix=None, material_overrides=None):
     try:
         import numpy as np
         import trimesh
@@ -179,6 +179,10 @@ def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orie
         orientation = None
     # 资产在离线工具中导入，打包后不再允许任何外部资源URI。
     scene = trimesh.load(str(path), force='scene', process=False)
+    material_records = []
+    if material_overrides is not None:
+        from material_colors import apply_material_overrides
+        material_records = apply_material_overrides(scene, material_overrides, path, vertex_color_space)
     meshes, transformed_normals, color_sampling = [], [], []
     for node in scene.graph.nodes_geometry:
         transform, geometry_name = scene.graph[node]
@@ -240,6 +244,8 @@ def normalized_meshes(path, up_axis, front_axis, vertex_color_space="auto", orie
         'normalTransform': 'source-normal-inverse-transpose-of-scene-rotation-and-normalization',
         'triangles': sum(len(mesh.faces) for mesh in meshes),
     }
+    if material_overrides is not None:
+        report['materialOverrides'] = material_records
     return meshes, report
 
 
@@ -290,12 +296,15 @@ def render_top_view(meshes, resolution=384):
     return output.getvalue()
 
 
-def pbr_export_meshes(path, meshes, alignment, texture_max_size):
+def pbr_export_meshes(path, meshes, alignment, texture_max_size, material_overrides=None):
     """只恢复3D副本的源UV/材质；2D采样网格、几何和作者法线不改。"""
     import trimesh
     import numpy as np
     from PIL import Image
     scene = trimesh.load(str(path), force='scene', process=False)
+    if material_overrides is not None:
+        from material_colors import apply_material_overrides
+        apply_material_overrides(scene, material_overrides, path, alignment['sourceVertexColorSpace'])
     material_cache, image_cache, texture_records, exported = {}, {}, [], []
     properties = ('baseColorTexture', 'metallicRoughnessTexture', 'normalTexture',
                   'occlusionTexture', 'emissiveTexture', 'image')
@@ -371,14 +380,19 @@ def deduplicate_material_images(tree):
                     container[key]['index'] = texture_map[container[key]['index']]
 
 
-def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis='-y', method='provided-mesh', license_name='unknown', resolution=384, provenance=None, vertex_color_space="auto", orientation_matrix=None, material_mode='vertex-color', texture_max_size=256):
+def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis='-y', method='provided-mesh', license_name='unknown', resolution=384, provenance=None, vertex_color_space="auto", orientation_matrix=None, material_mode='vertex-color', texture_max_size=256, material_overrides=None):
     if material_mode not in ('vertex-color', 'preserve-pbr'):
         raise ValueError('材质模式仅支持vertex-color、preserve-pbr')
     if (not isinstance(texture_max_size, int) or isinstance(texture_max_size, bool)
             or not 32 <= texture_max_size <= 2048):
         raise ValueError('贴图最大尺寸需要32到2048之间的整数')
+    if material_overrides is not None:
+        if material_mode != 'preserve-pbr':
+            raise ValueError('材质配色需要--material-mode preserve-pbr，不能合并为单一顶点色材质')
+        from material_colors import validate_material_overrides
+        material_overrides = validate_material_overrides(material_overrides)
     import trimesh
-    meshes, alignment = normalized_meshes(mesh_path, up_axis, front_axis, vertex_color_space, orientation_matrix)
+    meshes, alignment = normalized_meshes(mesh_path, up_axis, front_axis, vertex_color_space, orientation_matrix, material_overrides)
     if alignment['triangles'] > 250000:
         raise ValueError('三角面超过250000，请明确简化源网格后重试')
     def neutral_materials(tree):
@@ -388,7 +402,7 @@ def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis=
                 primitive["material"] = 0
     export_meshes, texture_records = meshes, []
     if material_mode == 'preserve-pbr':
-        export_meshes, texture_records = pbr_export_meshes(mesh_path, meshes, alignment, texture_max_size)
+        export_meshes, texture_records = pbr_export_meshes(mesh_path, meshes, alignment, texture_max_size, material_overrides)
         alignment['colorMode'] = 'source-pbr-uv-materials;top-view-linear-vertex-colors'
     alignment['materialMode'] = material_mode
     glb = trimesh.exchange.gltf.export_glb(trimesh.Scene(export_meshes), include_normals=True,
@@ -411,6 +425,9 @@ def prepare(mesh_path, image_path, asset_id, height_mm, up_axis='z', front_axis=
     })
     if orientation_matrix is not None:
         info['orientation'] = {'mode': alignment['orientationMode'], 'rotation': alignment['sourceToCanonicalRotation'], 'evidence': alignment['orientationEvidence']}
+    if material_overrides is not None:
+        info['materialOverrides'] = copy.deepcopy(alignment['materialOverrides'])
+        info['colorNotice'] += '已按显式照片/色卡依据分材质配色；照片光照与白平衡未知，不代表实物色卡或不同光照下的逐像素一致。'
     asset = {'id': asset_id, 'format': 'glb', 'dataUrl': data_url('model/gltf-binary', glb), 'topViewDataUrl': data_url('image/png', top), 'defaultHeightMm': height_mm, 'alignment': alignment, 'provenance': info}
     report = validate_asset(asset)
     return asset, {'ok': True, **report, 'alignment': alignment, 'provenance': info}
@@ -450,6 +467,7 @@ def main():
     p.add_argument('--vertex-color-space', choices=['auto', 'srgb', 'linear'], default='auto')
     p.add_argument('--material-mode', choices=['vertex-color', 'preserve-pbr'], default='vertex-color')
     p.add_argument('--texture-max-size', type=int, default=256)
+    p.add_argument('--material-overrides', help='按源材质index或name映射sRGB颜色的JSON，需preserve-pbr')
     p.add_argument('--method', default='provided-mesh')
     p.add_argument('--license', default='unknown')
     p.add_argument('--resolution', type=int, default=384)
@@ -466,6 +484,10 @@ def main():
     p.add_argument('--background', choices=['auto', 'alpha', 'none'], default='auto')
     p = commands.add_parser('inspect')
     p.add_argument('asset')
+    p = commands.add_parser('materials', help='枚举源网格或已准备资产的材质，供显式颜色映射')
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--mesh')
+    source.add_argument('--asset')
     args = parser.parse_args()
     try:
         if args.command == 'prepare':
@@ -473,7 +495,8 @@ def main():
                 raise ValueError('俯视分辨率需为32～1024')
             provenance = json.loads(Path(args.provenance_json).read_text()) if args.provenance_json else None
             orientation = json.loads(Path(args.orientation_matrix).read_text()) if args.orientation_matrix else None
-            asset, report = prepare(args.mesh, args.source_image, args.asset_id, args.height_mm, args.up_axis, args.front_axis, args.method, args.license, args.resolution, provenance, args.vertex_color_space, orientation_matrix=orientation, material_mode=args.material_mode, texture_max_size=args.texture_max_size)
+            material_overrides = json.loads(Path(args.material_overrides).read_text()) if args.material_overrides else None
+            asset, report = prepare(args.mesh, args.source_image, args.asset_id, args.height_mm, args.up_axis, args.front_axis, args.method, args.license, args.resolution, provenance, args.vertex_color_space, orientation_matrix=orientation, material_mode=args.material_mode, texture_max_size=args.texture_max_size, material_overrides=material_overrides)
             write_json(args.output, asset)
             write_json(args.report or str(Path(args.output).with_suffix('.report.json')), report)
             Path(args.output).with_suffix('.top.png').write_bytes(base64.b64decode(asset['topViewDataUrl'].split(',', 1)[1]))
@@ -493,6 +516,10 @@ def main():
             report.update(ok=True, status='needs_visual_review', sourceImageSha256=hashlib.sha256(Path(args.source_image).read_bytes()).hexdigest(), inferencePerformed=False)
             write_json(output.with_suffix('.report.json'), report)
             print(json.dumps(report, ensure_ascii=False))
+        elif args.command == 'materials':
+            from material_colors import material_inventory
+            asset = json.loads(Path(args.asset).read_text()) if args.asset else None
+            print(json.dumps(material_inventory(path=args.mesh, asset=asset), ensure_ascii=False))
         else:
             print(json.dumps(validate_asset(json.loads(Path(args.asset).read_text())), ensure_ascii=False))
     except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:

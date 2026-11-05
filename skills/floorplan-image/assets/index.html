@@ -93,6 +93,7 @@ tr.click:hover td{background:#faf5ee}
 .form input[type=color]{padding:2px;height:30px}
 .actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .actions .btn{border:1px solid var(--line);background:#fff}
+.actions .btn.on{background:var(--ink);color:#fff}
 .mats{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .mat{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:6px;background:#fff;cursor:pointer;text-align:left}
 .mat.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
@@ -629,17 +630,19 @@ function validateFurnitureAsset(a,key){
   furnitureAssetBytes(a.dataUrl);
   return a;
 }
-async function attachFurnitureAsset(furnitureId,asset){
+async function attachFurnitureAsset(furnitureId,asset,replaceOwnedAsset=false){
   validateFurnitureAsset(asset);
   const startedPlan=state.plan,startedFurniture=getF(furnitureId);
   if(!startedFurniture)throw new Error('待替换家具不存在');
+  const startedAssetId=startedFurniture.assetId,startedAsset=state.plan.furnitureAssets?.[startedAssetId];
   if(!window.View3D?.validateAssetModel)throw new Error('3D引擎仍在加载或加载失败，请联网并稍后导入资产');
   await window.View3D.validateAssetModel(asset);
-  if(state.plan!==startedPlan||getF(furnitureId)!==startedFurniture)throw new Error('加载期间方案或目标家具已变化，请重新选择后导入');
+  if(window.View3D?.editorState().dragging)throw new Error('请结束坐标轴拖动后再导入资产');
+  if(state.plan!==startedPlan||getF(furnitureId)!==startedFurniture||startedFurniture.assetId!==startedAssetId||state.plan.furnitureAssets?.[startedAssetId]!==startedAsset)throw new Error('加载期间方案或目标家具模型已变化，请重新选择后导入');
   const candidate=exportPlan(),f=candidate.furniture.find(f=>f.id===furnitureId);
   if(!f)throw new Error('待替换家具不存在');
   candidate.furnitureAssets=candidate.furnitureAssets||{};
-  if(Object.prototype.hasOwnProperty.call(candidate.furnitureAssets,asset.id)&&JSON.stringify(candidate.furnitureAssets[asset.id])!==JSON.stringify(asset))throw new Error('资产 id 已存在且内容不同，请使用新的资产 id');
+  if(Object.prototype.hasOwnProperty.call(candidate.furnitureAssets,asset.id)&&JSON.stringify(candidate.furnitureAssets[asset.id])!==JSON.stringify(asset)){const old=candidate.furnitureAssets[asset.id],owned=replaceOwnedAsset&&startedFurniture.assetId===asset.id&&old.provenance.browserMaterialOwner===furnitureId&&state.furniture.filter(x=>x.assetId===asset.id).length===1;if(!owned)throw new Error('资产 id 已存在且内容不同，请使用新的资产 id');}
   candidate.furnitureAssets[asset.id]=JSON.parse(JSON.stringify(asset));f.assetId=asset.id;f.height=f.height??asset.defaultHeightMm;validatePlan(candidate);
   mutate(()=>{state.plan.furnitureAssets=candidate.furnitureAssets;const target=getF(furnitureId);target.assetId=asset.id;target.height=f.height;});
 }
@@ -724,7 +727,16 @@ function exportPlan(){
 function loadPlan(p){
   validatePlan(p);const b=snap();state=planState(p);ui.sel=null;ui.mA=null;commit(b,true);renderAll();fitView();
 }
-window.Floorplan={validatePlan,validateFurnitureAsset,attachFurnitureAsset,restoreFurnitureAsset,loadPlan,exportPlan,getState:()=>JSON.parse(snap()),persistence:()=>({...persistenceStatus})};
+async function applyFurnitureMaterial(id,recipe){
+  if(!window.View3D)throw new Error('3D引擎尚未就绪');
+  const expectedState=state,expectedPlan=state.plan,expectedFurniture=getF(id),expectedAssetId=expectedFurniture?.assetId,expectedAsset=state.plan.furnitureAssets?.[expectedAssetId];
+  if(!expectedAsset)throw new Error('此家具没有自定义模型');
+  const asset=await window.View3D.materialAsset(id,recipe);
+  if(window.View3D.editorState().dragging)throw new Error('请结束坐标轴拖动后再应用材质');
+  if(state!==expectedState||state.plan!==expectedPlan||getF(id)!==expectedFurniture||expectedFurniture.assetId!==expectedAssetId||state.plan.furnitureAssets?.[expectedAssetId]!==expectedAsset)throw new Error('生成期间方案或家具模型已变化，请重新应用材质');
+  await attachFurnitureAsset(id,asset,true);return asset.id;
+}
+window.Floorplan={applyFurnitureMaterial,validatePlan,validateFurnitureAsset,attachFurnitureAsset,restoreFurnitureAsset,loadPlan,exportPlan,getState:()=>JSON.parse(snap()),persistence:()=>({...persistenceStatus})};
 
 const PX_MM = 25.4 / 96;                       // 1 CSS px = 0.2646 mm
 const COARSE = matchMedia('(pointer:coarse)').matches;   // iPad / 手机等触屏为主的设备
@@ -1241,7 +1253,7 @@ function furnPanel(f){
       <label>${tr('中心','Center')} Y (mm)<input type="number" id="fY" value="${Math.round(f.cy)}" step="10"></label>
       <label>${tr('旋转','Rotation')} (°)<input type="number" id="fR" value="${f.rot}" step="15"></label>
       <label>${tr('颜色','Color')}<input type="color" id="fC" value="${f.color}" ${f.assetId?'disabled title="图片模型使用自身材质"':''}></label>
-      ${f.assetId?`<label>${tr('模型高度','Model height')} (mm)<input type="number" id="fH" value="${f.height||state.plan.furnitureAssets[f.assetId].defaultHeightMm}" min="1" max="10000" step="10"></label>`:''}
+      <label>${tr('模型高度','Model height')} (mm)<input type="number" id="fH" value="${f.height??(f.assetId?state.plan.furnitureAssets[f.assetId].defaultHeightMm:'')}" placeholder="${tr('自动','Auto')}" min="1" max="10000" step="10"></label>
     </div>
     <div class="muted" style="margin-top:8px">${tr('占地面积','Footprint')} ${fmt(f.w*f.d/1e6)} m²</div>
     <div class="actions">
@@ -1249,6 +1261,8 @@ function furnPanel(f){
       <button class="btn" id="aTop">${tr('置于顶层','Bring to front')}</button><button class="btn" id="aBot">${tr('置于底层','Send to back')}</button>
       <button class="btn danger" id="aDel">${tr('删除','Delete')}</button><button class="btn" id="back">${tr('← 返回','← Back')}</button>
     </div></section>
+  <section><h3>${tr('3D操作','3D transform')}</h3><div class="actions">${[['translate','移动','Move'],['rotate','旋转','Rotate'],['scale','缩放','Scale'],['off','关闭','Off']].map(([mode,zh,en])=>`<button class="btn ${(window.View3D?.editorState().mode||'off')===mode?'on':''}" data-ftransform="${mode}">${tr(zh,en)}</button>`).join('')}</div><p class="muted">${tr('拖动坐标轴操作家具整体；移动保持落地，旋转限于水平面。','Drag an axis to edit the whole item. Movement stays on the floor; rotation is around the vertical axis.')}</p></section>
+  ${f.assetId?`<section><h3>${tr('模型材质','Model materials')}</h3><div id="fMaterialPanel" class="muted">${tr('正在读取材质…','Loading materials…')}</div></section>`:''}
   <section><h3>${tr('家具模型资产','Furniture model asset')}</h3>
     <p class="muted">${f.assetId?`${tr('当前资产','Current asset')}: ${esc(f.assetId)} · ${tr('自定义模型，尺寸与来源需复核','Custom model; verify dimensions and source')}`:tr('可由 Agent 匹配或适配已有模型，再替换当前家具。','Ask the Agent to match or adapt an existing model, then replace this item.')}</p>
     <input type="file" id="fAssetFile" accept="application/json,.json" hidden>
@@ -1266,6 +1280,8 @@ function bindFurnPanel(f){
   num('#fX', (g,v) => g.cx = v); num('#fY', (g,v) => g.cy = v); num('#fR', (g,v) => g.rot = norm(v));
   $('#fC').onchange = e => upd(g => g.color = e.target.value);
   if($('#fH'))num('#fH',(g,v)=>g.height=Math.min(10000,Math.max(1,Math.round(v))));
+  document.querySelectorAll('[data-ftransform]').forEach(b=>b.onclick=async()=>{if(!window.View3D)return toast(tr('3D引擎尚未就绪','3D is not ready'));await setView('3d');if(getF(f.id))window.View3D.setEditorMode(b.dataset.ftransform);});
+  if(f.assetId)bindFurnitureMaterialPanel(f);
   $('#fAssetImport').onclick=()=>$('#fAssetFile').click();
   $('#fAssetFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>24*1024*1024)throw new Error('资产JSON超过24MB，请先简化模型');const asset=JSON.parse(await file.text());await attachFurnitureAsset(f.id,asset);toast(tr('家具资产已替换；3D加载状态请查看场景。','Furniture asset replaced; check the 3D scene for loading status.'));}catch(err){toast(err.message||'家具资产导入失败');}};
   if($('#fAssetRestore'))$('#fAssetRestore').onclick=()=>restoreFurnitureAsset(f.id);
@@ -1275,6 +1291,24 @@ function bindFurnPanel(f){
   $('#aTop').onclick = () => mutate(() => { const i = state.furniture.findIndex(g => g.id===f.id); state.furniture.push(...state.furniture.splice(i,1)); });
   $('#aBot').onclick = () => mutate(() => { const i = state.furniture.findIndex(g => g.id===f.id); state.furniture.unshift(...state.furniture.splice(i,1)); });
   $('#back').onclick = () => select(null);
+}
+
+// 材质面板异步读取的是资产副本，切换选择或方案后不写回旧面板。
+function bindFurnitureMaterialPanel(f){
+  const panel=$('#fMaterialPanel'),assetId=f.assetId;
+  if(!window.View3D){panel.textContent=tr('3D引擎尚未就绪，请联网后重选家具。','3D is not ready. Connect and reselect the item.');return;}
+  window.View3D.materials(f.id).then(rows=>{
+    if(!panel.isConnected||getF(f.id)!==f||f.assetId!==assetId)return;
+    panel.innerHTML=`<div class="form"><label class="full">${tr('材质','Material')}<select id="fMaterial">${rows.map(m=>`<option value="${m.index}">${esc(m.name||tr('未命名材质','Unnamed material'))} · ${m.index+1}</option>`).join('')}</select></label><label>${tr('颜色','Color')}<input type="color" id="fMaterialColor"></label><label>${tr('粗糙度','Roughness')}<input type="number" id="fMaterialRoughness" min="0" max="1" step="0.05"></label><label class="full">${tr('底色纹理','Base-color texture')}<select id="fMaterialTexture"><option value="luminance">${tr('保留纹理明暗，替换色相','Keep texture shading; replace hue')}</option><option value="solid">${tr('纯色（保留透明部分）','Solid color (keep transparency)')}</option></select></label></div><button class="btn" id="fMaterialApply" style="margin-top:10px">${tr('应用材质修改','Apply material changes')}</button><p class="muted">${tr('只修改所选材质，其他部位保持原样。应用后平面图一起更新；光照和屏幕会影响观感。','Only the selected material changes. Applying also updates the plan image; lighting and displays affect appearance.')}</p>`;
+    const selected=()=>rows.find(m=>m.index===+panel.querySelector('#fMaterial').value);
+    const show=()=>{const m=selected();panel.querySelector('#fMaterialColor').value=m.color;panel.querySelector('#fMaterialRoughness').value=m.roughness;};
+    panel.querySelector('#fMaterial').onchange=show;show();
+    panel.querySelector('#fMaterialApply').onclick=async()=>{
+      const button=panel.querySelector('#fMaterialApply');button.disabled=true;
+      const recipe={schemaVersion:1,materials:[{index:selected().index,color:panel.querySelector('#fMaterialColor').value,roughness:+panel.querySelector('#fMaterialRoughness').value,textureMode:panel.querySelector('#fMaterialTexture').value,evidence:tr('用户在浏览器中明确选择的材质颜色','Material color explicitly chosen by the user in the browser')}]};
+      try{await window.Floorplan.applyFurnitureMaterial(f.id,recipe);toast(tr('材质已应用，平面与3D已同步。','Material applied to both plan and 3D.'));}catch(e){toast(e.message||tr('材质修改失败，原模型保留。','Material edit failed; original model retained.'));if(button.isConnected)button.disabled=false;}
+    };
+  }).catch(e=>{if(panel.isConnected)panel.textContent=e.message;});
 }
 
 /* ======================= 操作 ======================= */
@@ -1744,6 +1778,8 @@ fitView(); renderAll();
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {GLTFExporter} from 'three/addons/exporters/GLTFExporter.js';
+import {TransformControls} from 'three/addons/controls/TransformControls.js';
 import {PointerLockControls} from 'three/addons/controls/PointerLockControls.js';
 import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
@@ -1759,6 +1795,7 @@ const opt = {cut:H, furn:true, labels:true, night:false, hour:10, mode:'orbit'};
 let inited = false, active = false, raf = 0, anim = null, fly = null;
 let renderer, labelRenderer, scene, camera, topCamera, orbit, walkCtl, hemi, sun, ground, glassMat, wallMat, capMat, frameMat;
 let archFloor, archUp, furnG, labelG, lampG, colliders = [], selKey = null, selHelper = null;
+let transformControl, editorMode='off', transformEdit=null, suppressPickUntil=0;
 let sigArch = '', sigFurn = '', sigLabels = '', grow = 1, furnGrow = 1;
 const doors = [], keys = {};
 
@@ -1799,6 +1836,7 @@ function init(){
 
   archFloor = new THREE.Group(); archUp = new THREE.Group(); furnG = new THREE.Group(); labelG = new THREE.Group(); lampG = new THREE.Group();
   scene.add(archFloor, archUp, furnG, labelG, lampG);
+  initTransformEditor();
 
   const cv = renderer.domElement; let downAt = null, look = null;
   cv.addEventListener('pointerdown', e => {
@@ -1815,7 +1853,7 @@ function init(){
   // 在父元素上用捕获阶段监听，赶在 OrbitControls 之前关掉它，避免同时旋转镜头
   let fdrag = null;
   host.addEventListener('pointerdown', e => {
-    if (e.target !== cv || !e.isPrimary || anim || opt.mode !== 'orbit' || ui.sel?.kind !== 'furn') return;
+    if (e.target !== cv || !e.isPrimary || anim || editorMode!=='off' || opt.mode !== 'orbit' || ui.sel?.kind !== 'furn') return;
     const h = pick(e), f = h?.fid === ui.sel.id && getF(h.fid), g = f && groundAt(e.clientX, e.clientY);
     if (!g) return;
     fdrag = {id:f.id, pid:e.pointerId, sx:e.clientX, sy:e.clientY, ox:g.x - f.cx, oy:g.y - f.cy, before:snap(), moved:false};
@@ -1843,7 +1881,7 @@ function init(){
       if (tap){ const h = pick(e); if (h?.door && h.dist < 3.5) h.door.open = !h.door.open; }   // 漫游时点门开关
       return;
     }
-    if (anim || opt.mode !== 'orbit' || !tap) return;
+    if (anim || opt.mode !== 'orbit' || transformControl?.dragging || performance.now()<suppressPickUntil || !tap) return;
     const h = pick(e);
     if (h?.door) h.door.open = !h.door.open;
     else if (h?.fid) window.select({kind:'furn', id:h.fid});
@@ -2509,6 +2547,7 @@ function buildFurniture(f){
   const bounds=new THREE.Box3().setFromObject(content,true),size=bounds.getSize(new THREE.Vector3()),center=bounds.getCenter(new THREE.Vector3());
   if(size.x>1e-6&&size.z>1e-6){content.scale.x=w/size.x;content.scale.z=d/size.z;content.position.x=-center.x*content.scale.x;content.position.z=-center.z*content.scale.z;}
   if(Number.isFinite(bounds.min.y))content.position.y=-bounds.min.y;
+  if(f.height!==undefined&&size.y>1e-6){content.scale.y=M(f.height)/size.y;content.position.y=-bounds.min.y*content.scale.y;}
   g.add(content);
   g.position.set(wx(f.cx), 0, wz(f.cy));
   g.rotation.y = -f.rot * Math.PI/180;       // 平面顺时针旋转 → 绕 Y 轴负向
@@ -2621,6 +2660,8 @@ function assetTemplate(asset){
         const model=gltf.scene,box=new THREE.Box3().setFromObject(model),size=box.getSize(new THREE.Vector3());
         if(!model||box.isEmpty()||![size.x,size.y,size.z].every(v=>Number.isFinite(v)&&v>0))throw new Error('家具模型没有可见的有限网格');
         if(Math.max(Math.abs(box.min.x+.5),Math.abs(box.max.x-.5),Math.abs(box.min.y),Math.abs(box.max.y-1),Math.abs(box.min.z+.5),Math.abs(box.max.z-.5))>.002)throw new Error('家具GLB未按协议归一化：X/Z[-0.5,0.5]，Y[0,1]；请先运行资产预处理');
+        model.traverse(o=>{if(o.isMesh)for(const m of (Array.isArray(o.material)?o.material:[o.material])){const index=Number.isInteger(m.userData.floorplanMaterialGroup)?m.userData.floorplanMaterialGroup:gltf.parser.associations.get(m)?.materials;if(Number.isInteger(index)){m.userData.assetMaterialIndex=index;m.userData.floorplanMaterialGroup=index;}}});
+        materialRows(model);
         cached.status='ready';cached.model=model;resolve(model);
       }catch(e){reject(e);}
     },reject);
@@ -2628,12 +2669,113 @@ function assetTemplate(asset){
   return cached;
 }
 function cloneFurnitureAsset(template){
-  const copy=template.clone(true);
-  copy.traverse(o=>{if(o.isMesh){o.geometry=o.geometry.clone();const clone=m=>{const v=m.clone();v.userData={...v.userData,ownedFurnitureAsset:true};return v;};o.material=Array.isArray(o.material)?o.material.map(clone):clone(o.material);o.castShadow=o.receiveShadow=true;}});
+  const copy=template.clone(true),materials=new Map();
+  copy.traverse(o=>{if(o.isMesh){o.geometry=o.geometry.clone();const clone=m=>{if(!materials.has(m)){const v=m.clone();v.userData={...v.userData,ownedFurnitureAsset:true};materials.set(m,v);}return materials.get(m);};o.material=Array.isArray(o.material)?o.material.map(clone):clone(o.material);o.castShadow=o.receiveShadow=true;}});
   return copy;
 }
+/* ======================= 模型材质与同网格俯视图 ======================= */
+function materialRows(model){
+  const objects=new Map(),used=new Set();
+  model.traverse(o=>{if(o.isMesh)for(const m of (Array.isArray(o.material)?o.material:[o.material]))if(m&&Number.isInteger(m.userData.assetMaterialIndex))used.add(m.userData.assetMaterialIndex);});
+  let fallback=0;
+  model.traverse(o=>{if(o.isMesh)for(const m of (Array.isArray(o.material)?o.material:[o.material])){if(!m)continue;if(!Number.isInteger(m.userData.assetMaterialIndex)){while(used.has(fallback))fallback++;m.userData.assetMaterialIndex=fallback;m.userData.floorplanMaterialGroup=fallback;used.add(fallback++);}if(!objects.has(m.userData.assetMaterialIndex))objects.set(m.userData.assetMaterialIndex,m);}});
+  return [...objects].sort((a,b)=>a[0]-b[0]).map(([index,m])=>({index,name:m.name||'',color:'#'+m.color.getHexString(THREE.SRGBColorSpace),roughness:Number.isFinite(m.roughness)?m.roughness:.8,hasColorTexture:!!m.map}));
+}
+const srgbLinear=v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4;
+const linearSrgb=v=>v<=.0031308?12.92*v:1.055*v**(1/2.4)-.055;
+function grayColorTexture(map,solid=false){
+  const image=map.image,w=image?.width||image?.naturalWidth,h=image?.height||image?.naturalHeight;
+  if(!w||!h||w>4096||h>4096)throw new Error('底色贴图尺寸无效或过大，请先通过Agent准备资产');
+  const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0,w,h);const pixels=ctx.getImageData(0,0,w,h);
+  let hasAlpha=false;for(let i=0;i<pixels.data.length;i+=4){const y=.2126*srgbLinear(pixels.data[i]/255)+.7152*srgbLinear(pixels.data[i+1]/255)+.0722*srgbLinear(pixels.data[i+2]/255),v=solid?255:Math.round(255*linearSrgb(y));pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=v;if(pixels.data[i+3]<255)hasAlpha=true;}if(solid&&!hasAlpha)return null;ctx.putImageData(pixels,0,0);
+  const texture=new THREE.CanvasTexture(canvas);
+  for(const k of ['wrapS','wrapT','magFilter','minFilter','anisotropy','flipY','generateMipmaps','rotation','matrixAutoUpdate','channel'])texture[k]=map[k];
+  texture.offset.copy(map.offset);texture.repeat.copy(map.repeat);texture.center.copy(map.center);texture.matrix.copy(map.matrix);texture.colorSpace=THREE.SRGBColorSpace;texture.userData.ownedMaterialEdit=true;texture.needsUpdate=true;return texture;
+}
+function materialRecipe(recipe,rows){
+  if(!recipe||recipe.schemaVersion!==1||!Array.isArray(recipe.materials)||!recipe.materials.length)throw new Error('配色需要schemaVersion:1与非空materials');
+  const used=new Set();
+  return recipe.materials.map(r=>{
+    if(!r||typeof r!=='object'||Array.isArray(r)||('index'in r)===('name'in r))throw new Error('材质需要唯一index或name');
+    const matches=rows.filter(m=>'index'in r?Number.isInteger(r.index)&&m.index===r.index:typeof r.name==='string'&&m.name===r.name);
+    if(matches.length!==1)throw new Error('材质不存在或名称不唯一，请重新选择');const index=matches[0].index;
+    if(used.has(index))throw new Error('同一材质不能重复修改');used.add(index);
+    if(!/^#[0-9a-f]{6}$/i.test(r.color)||!['luminance','solid'].includes(r.textureMode))throw new Error('颜色需为#RRGGBB，纹理策略需为luminance或solid');
+    if(r.roughness!==undefined&&(!Number.isFinite(r.roughness)||r.roughness<0||r.roughness>1))throw new Error('粗糙度需要在0～1之间');
+    const evidence=r.evidence||recipe.evidence;if(typeof evidence!=='string'||!evidence.trim())throw new Error('请记录配色依据');
+    return {index,color:r.color,textureMode:r.textureMode,...(r.roughness!==undefined?{roughness:r.roughness}:{}),sourceMaterialName:matches[0].name,evidence};
+  });
+}
+function applyMaterialRecipe(model,recipe){
+  const edits=materialRecipe(recipe,materialRows(model)),byIndex=new Map(edits.map(r=>[r.index,r])),done=new Set();
+  model.traverse(o=>{if(!o.isMesh)return;const materials=Array.isArray(o.material)?o.material:[o.material],selected=materials.filter(m=>byIndex.has(m.userData.assetMaterialIndex));if(!selected.length)return;
+    const colors=o.geometry.getAttribute('color');
+    if(colors){const modes=new Set(selected.map(m=>byIndex.get(m.userData.assetMaterialIndex).textureMode));if(selected.length!==materials.length||modes.size!==1)throw new Error('此网格的多个材质共享顶点颜色，请让Agent按材质拆分后再改色');const mode=[...modes][0];for(let i=0;i<colors.count;i++){const y=mode==='solid'?1:.2126*colors.getX(i)+.7152*colors.getY(i)+.0722*colors.getZ(i);colors.setXYZ(i,y,y,y);}colors.needsUpdate=true;}
+    for(const m of selected){if(done.has(m))continue;done.add(m);const r=byIndex.get(m.userData.assetMaterialIndex);m.color.set(r.color);if(r.roughness!==undefined)m.roughness=r.roughness;if(m.map)m.map=grayColorTexture(m.map,r.textureMode==='solid');m.needsUpdate=true;}
+  });return edits;
+}
+function bytesDataUrl(buffer){const bytes=new Uint8Array(buffer);let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));return 'data:model/gltf-binary;base64,'+btoa(binary);}
+function materialTopView(model){
+  const preview=model.clone(true),materials=[];preview.traverse(o=>{if(o.isMesh){const basic=m=>{const b=new THREE.MeshBasicMaterial({color:m.color,map:m.map,side:m.side,transparent:m.transparent,opacity:m.opacity,alphaTest:m.alphaTest,vertexColors:m.vertexColors});materials.push(b);return b;};o.material=Array.isArray(o.material)?o.material.map(basic):basic(o.material);}});
+  const r=new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:true});r.setSize(384,384);r.setPixelRatio(1);r.outputColorSpace=THREE.SRGBColorSpace;r.toneMapping=THREE.NoToneMapping;r.setClearColor(0,0);
+  try{const sc=new THREE.Scene();sc.add(preview);const cam=new THREE.OrthographicCamera(-.5,.5,.5,-.5,.1,10);cam.position.set(0,3,0);cam.up.set(0,0,-1);cam.lookAt(0,.5,0);r.render(sc,cam);return r.domElement.toDataURL('image/png');}finally{materials.forEach(m=>m.dispose());r.dispose();r.forceContextLoss();}
+}
+async function buildMaterialAsset(id,recipe){
+  const startedPlan=state.plan,startedFurniture=getF(id),source=startedFurniture&&state.plan.furnitureAssets?.[startedFurniture.assetId];if(!source)throw new Error('此家具没有自定义模型');
+  const model=cloneFurnitureAsset(await assetTemplate(source).promise);
+  try{
+    const edits=applyMaterialRecipe(model,recipe),buffer=await new GLTFExporter().parseAsync(model,{binary:true,onlyVisible:true,maxTextureSize:2048}),topViewDataUrl=materialTopView(model);
+    if(state.plan!==startedPlan||getF(id)!==startedFurniture||state.plan.furnitureAssets[startedFurniture.assetId]!==source)throw new Error('生成期间方案或家具已变化，请重新选择后应用');
+    const reusable=source.provenance.browserMaterialOwner===id&&state.furniture.filter(f=>f.assetId===source.id).length===1;
+    const assetId=reusable?source.id:'A_EDIT_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9),history=Array.isArray(source.provenance.materialEdits)?source.provenance.materialEdits:[];
+    const asset={...JSON.parse(JSON.stringify(source)),id:assetId,dataUrl:bytesDataUrl(buffer),topViewDataUrl,provenance:{...JSON.parse(JSON.stringify(source.provenance)),method:'browser-material-edit',browserMaterialOwner:id,derivedFromAssetId:source.provenance.derivedFromAssetId||source.id,materialEdits:[...history,{schemaVersion:1,materials:edits}],colorNotice:'用户指定sRGB配色；同一编辑后网格生成2D与3D，俯视PNG为无光照底色预览，3D仍受场景光照影响。'}};
+    validateFurnitureAsset(asset);await assetTemplate(asset).promise;
+    if(state.plan!==startedPlan||getF(id)!==startedFurniture||state.plan.furnitureAssets[startedFurniture.assetId]!==source)throw new Error('生成期间方案或家具模型已变化，请重新应用材质');return asset;
+  }finally{model.traverse(o=>{if(o.isMesh){o.geometry.dispose();for(const m of (Array.isArray(o.material)?o.material:[o.material])){if(m.map?.userData.ownedMaterialEdit)m.map.dispose();m.dispose();}}});}
+}
+
+/* ======================= 家具整体坐标轴编辑 ======================= */
+function initTransformEditor(){
+  transformControl=new TransformControls(camera,renderer.domElement);transformControl.setSize(.85);transformControl.setTranslationSnap(.01);transformControl.setRotationSnap(Math.PI/180);transformControl.setScaleSnap(.01);scene.add(transformControl);
+  transformControl.addEventListener('dragging-changed',e=>{orbit.enabled=!e.value&&!orthographicPlan&&opt.mode==='orbit';});
+  transformControl.addEventListener('mouseDown',()=>{
+    const g=transformControl.object,f=g&&getF(g.userData.fid);if(!f)return;
+    const box=new THREE.Box3().setFromObject(g,true);transformEdit={before:snap(),state,plan:state.plan,furniture:f,id:f.id,w:f.w,d:f.d,height:f.height||(box.max.y-box.min.y)*1000};fly=null;
+  });
+  transformControl.addEventListener('objectChange',()=>{
+    const e=transformEdit,g=transformControl.object;if(!e||!g)return;if(state!==e.state||state.plan!==e.plan||getF(e.id)!==e.furniture){transformEdit=null;transformControl.detach();return;}
+    const f=e.furniture;
+    if(editorMode==='translate'){g.position.y=0;f.cx=Math.round(g.position.x*1000+OX);f.cy=Math.round(g.position.z*1000+OY);}
+    if(editorMode==='rotate'){g.rotation.x=g.rotation.z=0;f.rot=norm(-g.rotation.y*180/Math.PI);}
+    if(editorMode==='scale'){
+      for(const k of ['x','y','z'])g.scale[k]=Math.max(.01,g.scale[k]);
+      f.w=Math.max(50,Math.round(e.w*g.scale.x));f.d=Math.max(50,Math.round(e.d*g.scale.z));f.height=Math.min(10000,Math.max(1,Math.round(e.height*g.scale.y)));
+      g.scale.set(f.w/e.w,f.height/e.height,f.d/e.d);g.position.y=0;
+    }
+    renderFurn();renderSel();for(const [key,value]of [['fW',f.w],['fD',f.d],['fH',f.height],['fX',f.cx],['fY',f.cy],['fR',f.rot]])if($('#'+key)&&value!==undefined)$('#'+key).value=value;
+  });
+  transformControl.addEventListener('mouseUp',()=>{
+    suppressPickUntil=performance.now()+120;const e=transformEdit;transformEdit=null;if(!e||state!==e.state||getF(e.id)!==e.furniture)return;
+    transformControl.detach();if(snap()!==e.before){commit(e.before);renderAll();}else updateTransformEditor();
+  });
+}
+function setEditorMode(mode){
+  if(!['off','translate','rotate','scale'].includes(mode))throw new Error('未知3D操作');
+  if(transformEdit){const e=transformEdit;transformEdit=null;if(state===e.state&&getF(e.id)===e.furniture){const before=JSON.parse(e.before),original=before.furniture.find(f=>f.id===e.id);for(const key of Object.keys(e.furniture))if(!Object.prototype.hasOwnProperty.call(original,key))delete e.furniture[key];Object.assign(e.furniture,original);}transformControl?.detach();sigFurn='';renderAll();}
+  editorMode=mode;updateTransformEditor();document.querySelectorAll('[data-ftransform]').forEach(b=>b.classList.toggle('on',b.dataset.ftransform===mode));
+}
+function updateTransformEditor(){
+  if(!transformControl)return;
+  const key=ui.sel?.kind==='furn'?ui.sel.id:null,g=key&&furnG.children.find(o=>o.userData.fid===key);
+  if(!active||anim||opt.mode!=='orbit'||editorMode==='off'||!g||!opt.furn){if(!transformEdit)transformControl.detach();return;}
+  if(transformEdit)return;
+  transformControl.camera=viewCamera();transformControl.setMode(editorMode);transformControl.setSpace(editorMode==='translate'?'world':'local');transformControl.showX=editorMode!=='rotate';transformControl.showY=editorMode!=='translate';transformControl.showZ=editorMode!=='rotate';
+  if(transformControl.object!==g)transformControl.attach(g);
+}
+
 function buildFurn(){
   const generation=++furnitureBuildGeneration;
+  transformControl?.detach();
   clearGroup(furnG);$('#assetNotice').hidden=true;
   state.furniture.forEach(f=>{
     const g=buildFurniture(f);furnG.add(g);
@@ -2674,6 +2816,7 @@ function buildLabels(){
 // 只重建变化的部分
 function sync(force){
   if (!inited || (!active && !force)) return;
+  if(transformEdit)return;
   const a = JSON.stringify([state.plan,state.rooms, state.demolished, opt.cut]), f = JSON.stringify(state.furniture), l = JSON.stringify([state.plan.rooms,state.rooms, opt.cut]);
   if (force || a !== sigArch){ sigArch = a; buildArch(); }
   if (force || f !== sigFurn){ sigFurn = f; buildFurn(); }
@@ -2735,6 +2878,7 @@ function viewCamera(){
 }
 function setProjectionPlan(on){
   orthographicPlan=on;fly=null;
+  if(transformControl)transformControl.camera=viewCamera();
   if(on){opt.cut=.18;orbit.enabled=false;syncCutBtns();sync();}
   else {orbit.enabled=true;opt.cut=H;syncCutBtns();sync();}
   updateOverheadVisibility();
@@ -2788,6 +2932,7 @@ async function enter(){
 async function exit(){
   if (opt.mode === 'walk'){ walkCtl.unlock(); stopTouchWalk(); $('#hint3d').textContent = HINT_ORBIT; $('#walkOverlay').style.display = 'none'; $('#cross').style.display = 'none';
     const dir = new THREE.Vector3(); camera.getWorldDirection(dir); orbit.target.copy(camera.position).addScaledVector(dir, 3).setY(0); opt.mode = 'orbit'; syncModeBtns(); }
+  setEditorMode('off');
   fly = null; orbit.enabled = false; showLabels(false); stage.classList.add('animating');
   const A = curPose(), B = planPose();
   await animate(1300, t => {
@@ -2846,6 +2991,7 @@ function updateSel(){
     if (g){ selHelper = new THREE.BoxHelper(g, 0xb5653a); scene.add(selHelper); }
   }
   if (selHelper) selHelper.update();
+  updateTransformEditor();
 }
 
 /* ======================= 漫游 ======================= */
@@ -2888,6 +3034,7 @@ function setMode(m){
   if (anim) return;
   orthographicPlan=false;updateOverheadVisibility();$('#vTop').classList.remove('on');opt.mode = m; syncModeBtns();
   if (m === 'walk'){
+    setEditorMode('off');
     window.select(null);
     if (opt.cut < H){ opt.cut = H; syncCutBtns(); sync(); }
     orbit.enabled = false; fly = null;
@@ -2988,9 +3135,14 @@ function shot(){ const a = document.createElement('a'); a.download = tr('户型�
 function relang(){ syncWalkTexts(); if (inited) buildLabels(); }
 
 window.View3D = {
+  setEditorMode,
+  editorState:()=>({mode:editorMode,attachedId:transformControl?.object?.userData.fid||null,dragging:!!transformControl?.dragging}),
+  transformHandles:()=>{if(!transformControl?.object)return [];scene.updateMatrixWorld(true);transformControl.updateMatrixWorld(true);const group=transformControl._gizmo.gizmo[editorMode],origin=transformControl.object.getWorldPosition(new THREE.Vector3()),rect=renderer.domElement.getBoundingClientRect();return ['X','Y','Z'].flatMap(axis=>{const candidates=group.children.filter(o=>o.isMesh&&o.visible&&o.name===axis).map(o=>{const b=new THREE.Box3().setFromObject(o,true),c=b.getCenter(new THREE.Vector3());if(editorMode==='rotate'){const a=o.geometry.getAttribute('position');let chosen=null;for(let i=0;i<a.count;i++){const v=new THREE.Vector3().fromBufferAttribute(a,i).applyMatrix4(o.matrixWorld);if(!chosen||v.x>chosen.x)chosen=v;}return chosen;}return c;}).sort((a,b)=>b.distanceTo(origin)-a.distanceTo(origin));if(!candidates.length)return [];const v=candidates[0].project(viewCamera());return [{axis,point:{x:rect.left+(v.x+1)*rect.width/2,y:rect.top+(1-v.y)*rect.height/2}}];});},
+  materials:async id=>{const f=getF(id),a=f&&state.plan.furnitureAssets?.[f.assetId];if(!a)throw new Error('此家具没有自定义模型');return materialRows(await assetTemplate(a).promise);},
+  materialAsset:buildMaterialAsset,
   validateAssetModel:asset=>assetTemplate(asset).promise.then(()=>true),
   assetLoadError:(dataUrl,topViewDataUrl)=>{const entry=topViewDataUrl===undefined?[...furnitureAssetCache.values()].find(v=>v.dataUrl===dataUrl&&v.status==='error'):furnitureAssetCache.get(furnitureAssetCacheKey(dataUrl,topViewDataUrl));return entry?.status==='error'?entry.error:null;},
-  projectPoint(x,y){if(!inited)return null;const p=new THREE.Vector3(wx(x),.6,wz(y)).project(viewCamera()),r=renderer.domElement.getBoundingClientRect();return {x:r.left+(p.x+1)*r.width/2,y:r.top+(1-p.y)*r.height/2};},
+  projectPoint(x,y,heightMm=600){if(!inited)return null;const p=new THREE.Vector3(wx(x),heightMm/1000,wz(y)).project(viewCamera()),r=renderer.domElement.getBoundingClientRect();return {x:r.left+(p.x+1)*r.width/2,y:r.top+(1-p.y)*r.height/2};},
   diagnostics(){return {projection:orthographicPlan?'orthographic':'perspective',furnitureBounds:inited?furnG.children.map(g=>{const b=new THREE.Box3().setFromObject(g,true);return {id:g.userData.fid,min:[b.min.x*1000+OX,b.min.z*1000+OY],max:[b.max.x*1000+OX,b.max.z*1000+OY],bottomMm:b.min.y*1000,heightMm:(b.max.y-b.min.y)*1000,assetId:g.userData.assetId||null,assetStatus:g.userData.assetStatus||'parametric',assetError:g.userData.assetError||null};}):[]};},
   setPlan(p,x,y){OX=x;OY=y;H=p.height/1000;opt.cut=orthographicPlan ? .18 : H;syncCutBtns();sigArch='';sigLabels='';sigFurn='';if(inited)sync(true);},enter, exit, relang, sync:() => sync(), shot, groundAt, flyToRoom:id => active && !anim && flyToRoom(id), walking:() => active && opt.mode === 'walk'};
 </script>
