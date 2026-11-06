@@ -1,6 +1,6 @@
 ---
 name: floorplan-image
-description: 将户型图还原为可编辑的 2D/3D HTML，或按家具照片识别并检索、适配近似网格以替换户型中的家具模型。用于户型矢量化、布置图还原和照片家具资产接入；单张室内照片不能据此补全整套户型。
+description: 将单层或多层户型图还原为可编辑的 2D/3D HTML，支持复式/别墅楼层切换、叠层与楼梯洞口；也可按家具照片适配近似库模型。用于户型矢量化与照片家具接入，单张室内照不能补全整栋户型。
 ---
 
 # 图片转可编辑户型与家具
@@ -15,6 +15,7 @@ description: 将户型图还原为可编辑的 2D/3D HTML，或按家具照片�
 
 ## 选择输入模式
 
+- **复式、别墅或其他多层图：**先读 [多层户型](references/multi-floor.md)，逐层执行户型识别后用建筑清单组合。每层独立标定，显式记录层间对齐、标高、洞口与楼梯连接，不把多层平铺在一个平面。单层识别方法继续使用下方协议。
 - **整张户型图或家具布置图：**先读 [像素观测与贴墙协议](references/pixel-observations.md)、[数据协议](references/plan-schema.md) 和 [识别与家具映射](references/recognition-guide.md)，按需查 [家具目录](references/furniture-catalog.json)，再执行下方户型流程。
 - **家具照片或合法网格，替换已有家具：**读 [家具照片与自定义模型](references/furniture-image.md)；需要检索时再读 [模型库检索与适配](references/furniture-retrieval.md)。室内随拍先明确目标对象，可见结构与未知部件分开记录。
 - **户型图加家具参考照：**先完成并复核户型，再逐件替换用户指定的家具；每张参考照须对应明确的家具实例。

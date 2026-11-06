@@ -30,6 +30,7 @@ def read_plan(path):
     """同时接收计划 JSON 与页面导出的 {plan: ...} 完整备份。"""
     data = json.loads(Path(path).read_text())
     if isinstance(data, dict) and 'plan' in data and 'schemaVersion' not in data:
+        require(not data.get('building'), '多层页面的完整编辑备份请先在页面导入，再用 Floorplan.exportPlan() 导出完整建筑；不能只读取活动层而丢失其他楼层')
         require(not data.get('demolished') and not data.get('measures'),
                 '完整导出含拆墙/测量状态，事务入口不能丢弃这些状态；请保留原备份，改在已有页面导入资产完成替换')
         data = data['plan']
@@ -99,6 +100,8 @@ def aspect_notice(item, asset):
 
 def replace_plan(plan, manifest, asset_base):
     """只在整批预检通过时返回新计划；失败返回 None 和可追溯报告，输入始终不变。"""
+    if plan.get('schemaVersion') == 2:
+        return replace_building(plan, manifest, asset_base)
     report = {'ok': False, 'status': 'rejected', 'items': [], 'errors': [], 'warnings': [],
               'inferencePerformed': False, 'onlineSearchPerformed': False,
               'browserVerification': {'status': 'not_run', 'required': [
@@ -174,6 +177,34 @@ def replace_plan(plan, manifest, asset_base):
         return None, report
 
 
+def replace_building(plan, manifest, asset_base):
+    """楼层作用域＋整栋事务；某层失败时不产生部分替换方案。"""
+    report={'ok':False,'status':'rejected','items':[],'errors':[],'warnings':[],
+            'inferencePerformed':False,'onlineSearchPerformed':False,'floors':[]}
+    try:
+        report['baselineWarnings']=validate(plan)
+        require(isinstance(manifest,dict) and manifest.get('schemaVersion')==1 and set(manifest)<= {'schemaVersion','replacements'},'替换清单格式无效')
+        rows=manifest.get('replacements');require(isinstance(rows,list) and bool(rows),'replacements 需要非空数组')
+        ids={f['id'] for f in plan['floors']}
+        for row in rows:require(isinstance(row,dict) and row.get('floorId') in ids,'多层替换必须为每条指定有效 floorId')
+        result=copy.deepcopy(plan)
+        for floor in result['floors']:
+            selected=[{k:v for k,v in row.items() if k!='floorId'} for row in rows if row['floorId']==floor['id']]
+            if not selected:continue
+            leaf,detail=replace_plan(floor['plan'],{'schemaVersion':1,'replacements':selected},asset_base)
+            report['floors'].append({'floorId':floor['id'],**detail})
+            report['items'].extend(dict(row,floorId=floor['id']) for row in detail.get('items',[]))
+            report['warnings'].extend(floor['id']+': '+w for w in detail.get('warnings',[]))
+            if not detail['ok']:
+                report['errors'].append({'floorId':floor['id'],'details':detail['errors']})
+                return None,report
+            floor['plan']=leaf
+        validate(result);report.update(ok=True,status='prepared_pending_browser')
+        return result,report
+    except (ValueError,KeyError,TypeError,OSError,ImportError) as exc:
+        report['errors'].append({'kind':'validation','detail':str(exc)});return None,report
+
+
 def write_bundle(plan, result, manifest, report, output):
     """新目录整体落盘；构建失败不留下貌似成功的半套 plan/HTML。"""
     target = Path(output)
@@ -194,10 +225,11 @@ def write_bundle(plan, result, manifest, report, output):
         for row in portable_manifest['replacements']:
             if row['decision'] != 'replace':
                 continue
-            item = next(f for f in result['furniture'] if f['id'] == row['itemId'])
+            leaf=next(f['plan'] for f in result['floors'] if f['id']==row['floorId']) if result.get('schemaVersion')==2 else result
+            item = next(f for f in leaf['furniture'] if f['id'] == row['itemId'])
             aid = item['assetId']
-            relative = 'assets/' + aid + '.json'
-            write_json(temporary / relative, result['furnitureAssets'][aid])
+            relative = 'assets/' + (row['floorId']+'-' if result.get('schemaVersion')==2 else '') + aid + '.json'
+            write_json(temporary / relative, leaf['furnitureAssets'][aid])
             bundled_assets.add(relative)
             row['asset'] = relative
         write_json(temporary / 'manifest.json', portable_manifest)

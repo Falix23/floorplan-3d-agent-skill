@@ -102,7 +102,9 @@ def from_pixels(data):
     else:
         for r in data['rooms']:
             if r.get('calibrationAreaM2'):
-                anchors.append((r['id'],r['calibrationAreaM2']*1e6/polygon_area(r['polyPx'])))
+                net=polygon_area(r['polyPx'])-sum(polygon_area(h) for h in r.get('holesPx',[]))
+                if net<=0:raise ValueError('面积标定的房间净面积须大于零')
+                anchors.append((r['id'],r['calibrationAreaM2']*1e6/net))
         if not anchors:raise ValueError('需要 mmPerPixel、尺寸标注标定或至少一个可靠房间面积标注')
         scale=math.sqrt(statistics.median(v for _,v in anchors));status='estimated';evidence='根据房间面积标注与像素内轮廓估计，非实测长度'
     if not isinstance(scale,(int,float)) or not math.isfinite(scale) or scale<=0:raise ValueError('像素比例无效')
@@ -113,8 +115,9 @@ def from_pixels(data):
     p['reference']={'width':data['image']['width'],'height':data['image']['height'],'originPx':[ox,oy],'mmPerPixel':scale}
     p['rooms']=[]
     for r in data['rooms']:
-        item={k:copy.deepcopy(v) for k,v in r.items() if k not in ('polyPx','atPx','calibrationAreaM2')}
+        item={k:copy.deepcopy(v) for k,v in r.items() if k not in ('polyPx','atPx','holesPx','calibrationAreaM2')}
         item['poly']=list(map(pt,r['polyPx']))
+        if 'holesPx' in r:item['holes']=[list(map(pt,h)) for h in r['holesPx']]
         if 'atPx'in r:item['at']=pt(r['atPx'])
         if 'calibrationAreaM2'in r:item['sourceAreaM2']=r['calibrationAreaM2']
         p['rooms'].append(item)
@@ -160,7 +163,7 @@ def audit_plan(plan):
             row['observedBBoxIoU']=round(inter/((bb[2]-bb[0])*(bb[3]-bb[1])+(out[2]-out[0])*(out[3]-out[1])-inter),5)
             row['centerErrorPx']=round(math.hypot((out[0]+out[2]-bb[0]-bb[2])/2,(out[1]+out[3]-bb[1]-bb[3])/2),4)
         rows.append(row)
-    areas=[{'id':r['id'],'sourceAreaM2':r['sourceAreaM2'],'reconstructedAreaM2':round(polygon_area(r['poly'])/1e6,3),'relativeError':round(polygon_area(r['poly'])/1e6/r['sourceAreaM2']-1,4)} for r in plan['rooms'] if r.get('sourceAreaM2')]
+    areas=[{'id':r['id'],'sourceAreaM2':r['sourceAreaM2'],'reconstructedAreaM2':round((polygon_area(r['poly'])-sum(polygon_area(h) for h in r.get('holes',[])))/1e6,3),'relativeError':round((polygon_area(r['poly'])-sum(polygon_area(h) for h in r.get('holes',[])))/1e6/r['sourceAreaM2']-1,4)} for r in plan['rooms'] if r.get('sourceAreaM2')]
     return {'furniture':rows,'wallCollisions':collisions,'roomAreas':areas,'note':'框一致性针对 Agent 记录的像素观测，不等同于真实图像识别准确率。'}
 
 

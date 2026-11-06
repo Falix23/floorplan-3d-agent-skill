@@ -1,5 +1,11 @@
 # floorplan-3d-agent-skill
 
+## Multi-floor plans (local development)
+
+Building schema v2 keeps a complete v1 plan per floor, with an explicit elevation, slab thickness and alignment evidence. The UI supports floor switching in 2D/3D, lower-floor outlines, whole-building stacking and an exploded view. Floor holes affect both the rendered slab and net area. Straight flights and connecting landings describe U/L stairs; validators check total rise and sampled upper-slab obstruction.
+
+This is a development branch, pending real-image validation. Self-authored regression fixtures do not establish recognition accuracy. Curved/spiral stairs, diagonal walls, split levels, roofs and automatic stair walking are not supported. See [multi-floor workflow](skills/floorplan-image/references/multi-floor.md).
+
 ## Original author, copyright and license
 
 This derivative project is based on **[wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d)** by **[wuyi (wy51ai)](https://github.com/wy51ai)**. The original copyright notice and complete MIT License are preserved below and in [LICENSE](LICENSE).

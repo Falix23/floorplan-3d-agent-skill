@@ -12,6 +12,17 @@
 
 Agent 根据 SKILL.md 识别图片，再运行 Python 脚本。HTML 自身不调用 AI API，也不包含 API 密钥。户型和家具照片由当前Agent识别；家具走已有模型检索与适配，不要求部署图生3D模型或下载权重。单张室内实景照不能唯一恢复完整户型，当前几何仅支持正交墙体。
 
+## 多层户型（开发分支验证中）
+
+新增建筑v2数据，逐层携带完整单层计划、标高、净高、板厚与对齐依据。2D可切换楼层、核对下层轮廓；3D提供单层编辑、按真实标高叠层与示意分层展开。房间支持真实楼板洞口，面积扣除挑空；直跑和带平台折返/转角楼梯按显式梯段生成，并检查总升高与上层楼板遮挡。
+
+照片识别仍由Agent逐图完成，不把自制测试通过当成真实别墅识别准确率。当前不支持斜墙、旋转/弧形楼梯、局部错层、屋顶建模或自动跨层漫游。完整多层流程与图片清单见 [多层Skill指南](skills/floorplan-image/references/multi-floor.md)。本项尚在本机开发分支，不代表GitHub默认分支已更新。
+
+```sh
+python3 skills/floorplan-image/scripts/plan_tools.py build examples/multi-floor-duplex.json --output outputs/duplex.html
+python3 skills/floorplan-image/scripts/building.py building-manifest.json --output outputs/building.json --html outputs/building.html --report outputs/building-report.json
+```
+
 ## 图片还原与贴墙复核
 
 Skill 现在先记录原图像素观测，再换算毫米。显式指定床头/柜背接触的墙面，保持居中家具原位；校正器拒绝穿墙、吸到门窗洞口、朝向冲突或过大的位置修正。
@@ -80,6 +91,7 @@ python3 -m unittest discover -s tests -v
 CI还安装 `playwright` 及匹配的 Chromium，并运行以下浏览器验收；本机可按相同步骤执行：
 
 ```sh
+python3 tests/browser_multi_floor.py
 python3 tests/browser_smoke.py
 python3 tests/browser_furniture_assets.py
 python3 tests/browser_furniture_assets.py --targeted
