@@ -132,6 +132,9 @@ def replace_plan(plan, manifest, asset_base):
             record['assetJsonSha256'] = hashlib.sha256(asset_bytes).hexdigest()
             result = attach(result, asset, fid)
             item = next(f for f in result['furniture'] if f['id'] == fid)
+            if plan.get('furnitureReview',{}).get('required') or item.get('orientationConstraint') or item.get('facingTarget'):
+                from furniture_constraints import release_source_constraints
+                release_source_constraints(item,'用户按家具照片主动替换；原图朝向/接触关系仅保留历史，新模型须另行复核')
             item.update(copy.deepcopy(row.get('set', {})))
             validate(result)
             record.update(assetId=asset['id'], status='prepared',

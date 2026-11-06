@@ -94,6 +94,26 @@ class MultiFloorTests(unittest.TestCase):
             self.assertEqual(json.loads(payload),self.b)
         self.assertEqual(original,self.b)
 
+    def tread_stair(self):
+        # 非图片数据：仅验证显式转角踏步的拓扑与标高。
+        # 六级工程夹具仅检查连接关系；500mm升高不代表实际楼梯设计。
+        self.b['stairs']=[{'id':'S1','name':'多边形踏步测试','fromFloorId':'F1','toFloorId':'F2','treads':[
+            {'poly':[[6750,4500+i*500],[7650,4500+i*500],[7650,5000+i*500],[6750,5000+i*500]],'rise':500} for i in range(6)]}]
+        return self.b['stairs'][0]
+
+    def test_explicit_treads_validate_height_shared_edges_and_upper_opening(self):
+        s=self.tread_stair();tools.validate(self.b)
+        s['treads'][2]['poly']=[[x+2000,y] for x,y in s['treads'][2]['poly']]
+        with self.assertRaisesRegex(ValueError,'共享边'):tools.validate(self.b)
+        s=self.tread_stair();s['treads'][0]['rise']=400
+        with self.assertRaisesRegex(ValueError,'总升高'):tools.validate(self.b)
+        s=self.tread_stair();s['flights']=[]
+        with self.assertRaisesRegex(ValueError,'不能混合'):tools.validate(self.b)
+
+    def test_explicit_tread_exit_cannot_be_hidden_by_upper_floor(self):
+        self.tread_stair();self.b['floors'][1]['plan']['rooms'][2].pop('holes')
+        with self.assertRaisesRegex(ValueError,'上层楼板'):tools.validate(self.b)
+
     def test_multi_floor_replacement_is_scoped_and_portable(self):
         original=copy.deepcopy(self.b)
         with tempfile.TemporaryDirectory() as tmp:

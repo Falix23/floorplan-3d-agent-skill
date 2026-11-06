@@ -48,6 +48,37 @@ def usable(point, room):
     return inside(point, room['poly']) and not any(inside(point, h) for h in room.get('holes', []))
 
 
+def validate_treads(stair, lo, hi):
+    """显式踏步多边形用于原图中的扇形转角，不以矩形平台替代。"""
+    from plan_tools import finite, cross
+    treads=stair['treads']
+    if 'flights' in stair or 'landings' in stair or not isinstance(treads,list) or not 2 <= len(treads) <= 200:
+        raise ValueError('显式treads需2～200级，不能混合flights/landings')
+    rise=0;previous=None
+    for tread in treads:
+        if not isinstance(tread,dict):raise ValueError('踏步须为对象')
+        polygon_valid(tread.get('poly'),'踏步')
+        if not finite(tread.get('rise')) or not 0 < tread['rise'] <= 500:raise ValueError('踏步升高无效')
+        poly=tread['poly'];rise+=tread['rise']
+        if previous is not None:
+            connected=False
+            for a,b in zip(previous,previous[1:]+previous[:1]):
+                length=math.dist(a,b)
+                if length<1:continue
+                for c,d in zip(poly,poly[1:]+poly[:1]):
+                    if abs(cross(a,b,c))/length>.1 or abs(cross(a,b,d))/length>.1:continue
+                    vx,vy=(b[0]-a[0])/length,(b[1]-a[1])/length
+                    q=sorted(((p[0]-a[0])*vx+(p[1]-a[1])*vy for p in (c,d)))
+                    if min(length,q[1])-max(0,q[0])>1:connected=True
+            if not connected:raise ValueError('相邻踏步缺少共享边，楼梯不连续')
+        previous=poly
+    if abs(rise-(hi['elevation']-lo['elevation']))>1:raise ValueError('楼梯总升高与上下层标高差不一致')
+    poly=treads[-1]['poly'];center=[sum(p[k] for p in poly)/len(poly) for k in (0,1)]
+    for vertex in poly:
+        p=[vertex[k]*.9+center[k]*.1-hi['offset'][k] for k in (0,1)]
+        if any(usable(p,r) for r in hi['plan']['rooms']):raise ValueError('显式踏步出口被上层楼板封住')
+
+
 def validate_building(building):
     from plan_tools import validate, finite, point, token, inside
     def need(ok, message):
@@ -91,6 +122,9 @@ def validate_building(building):
         need(rise > 0, '楼梯必须从低层指向高层')
         need(not any(lo['elevation'] < f['elevation'] < hi['elevation'] for f in floors), '跨越中间层的楼梯须分段连接相邻楼层')
         need(isinstance(s.get('name'), str), '楼梯需要名称')
+        if 'treads' in s:
+            validate_treads(s,lo,hi)
+            continue
         flights = s.get('flights')
         need(isinstance(flights, list) and 1 <= len(flights) <= 8, '楼梯需要1～8段直跑 flights')
         total = 0

@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT / 'scripts'))
 from reconstruct import refine_plan
+from furniture_constraints import validate_semantics
 from asset_validation import validate_asset
 
 CATALOG = json.loads((ROOT / "references/furniture-catalog.json").read_text())
@@ -151,6 +152,7 @@ def validate(plan):
         corners=[[f["cx"]+c*x-s*y,f["cy"]+s*x+c*y] for x,y in [(-f["w"]/2,-f["d"]/2),(f["w"]/2,-f["d"]/2),(f["w"]/2,f["d"]/2),(-f["w"]/2,f["d"]/2)]]
         if any(not any(inside(v,r["poly"]) for r in p["rooms"]) for v in corners):
             warnings.append(f["id"]+" 家具边角可能越界；检查是否为正常的墙挂或叠放")
+    validate_semantics(p)
     return warnings
 
 

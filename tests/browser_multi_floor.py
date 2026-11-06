@@ -99,6 +99,7 @@ def run():
             current=page.evaluate('Floorplan.exportPlan()')
             fresh=browser.new_context(viewport={'width':1500,'height':1000});configure_browser_runtime(fresh)
             q=fresh.new_page();q.goto(url);q.wait_for_function('!!window.Floorplan')
+            q.on('pageerror',lambda e:errors.append(str(e)))
             q.locator('#fileIn').set_input_files(str(output/'browser-export.json'))
             q.wait_for_function("Floorplan.activePlan().furniture[0].w===1600")
             assert q.evaluate('Floorplan.exportPlan()')==current
@@ -129,6 +130,31 @@ def run():
             assert q.evaluate('View3D.buildingDiagnostics().floors[2].offsetMm')==[400,0]
             q.screenshot(path=str(output/'villa-three-levels.png'))
             checks.append('地下室＋两层，负标高与三层展开')
+            treads=copy.deepcopy(plan)
+            treads['stairs']=[{'id':'S1','name':'显式踏步夹具','fromFloorId':'F1','toFloorId':'F2','treads':[
+                {'poly':[[6750,4500+i*500],[7650,4500+i*500],[7650,5000+i*500],[6750,5000+i*500]],'rise':500} for i in range(6)]}]
+            q.evaluate('p=>Floorplan.loadPlan(p)',treads)
+            assert q.locator('#gStairs path').count()==6
+            q.locator('#buildingMode').select_option('stacked');q.wait_for_timeout(1100)
+            stair=q.evaluate('View3D.buildingDiagnostics().floors[0].stairs[0]')
+            assert stair['meshCount']==6
+            assert abs(stair['topDisplayMm']-3000)<.1
+            assert not q.evaluate("View3D.floorProbe('F2',7200,6500)")
+            checks.append('显式多边形踏步在2D/实际网格中一致，连续连接并到达上层标高')
+            # 中间层同时显示两段连接；方向说明须分行，不能在同一位置叠字。
+            connections=copy.deepcopy(plan)
+            third=copy.deepcopy(connections['floors'][1]);third.update(id='F3',name='三层',elevation=6000)
+            connections['floors'].append(third)
+            second=copy.deepcopy(connections['stairs'][0]);second.update(id='S2',fromFloorId='F2',toFloorId='F3')
+            connections['stairs'].append(second)
+            q.locator('[data-view="2d"]').click();q.wait_for_function("!document.querySelector('#stage').classList.contains('animating')")
+            q.evaluate('p=>Floorplan.loadPlan(p)',connections);q.locator('#floorSelect').select_option('F2')
+            labels=q.locator('#gStairs text').evaluate_all("nodes=>nodes.map(n=>{const b=n.getBBox();return {direction:n.dataset.stairDirection,text:n.lastChild.textContent,x:b.x,y:b.y,w:b.width,h:b.height}})")
+            assert len(labels)==2 and {x['direction'] for x in labels}=={'down','up'}
+            a,b=labels
+            assert a['y']+a['h']<=b['y'] or b['y']+b['h']<=a['y'],labels
+            assert '三层' in next(x['text'] for x in labels if x['direction']=='up')
+            checks.append('中间楼层上下梯向使用目标楼层短标签，实际SVG文字不重叠')
             assert not errors,errors
             fresh.close();context.close();browser.close()
         report={'ok':True,'checks':checks,'pageErrors':errors,'realPhotoRecognitionValidated':False,'inputs':'self-authored architectural test fixtures'}

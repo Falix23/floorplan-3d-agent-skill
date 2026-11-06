@@ -17,10 +17,13 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r skills/floorplan-image/scripts/requirements-furniture.txt
+      - run: pip install -r skills/floorplan-image/scripts/requirements-alignment.txt
       - run: python -m unittest discover -s tests -v
       - run: pip install 'playwright>=1.48,<2'
       - run: python -m playwright install --with-deps chromium
       - run: python tests/browser_multi_floor.py
+      - run: python tests/browser_multifloor_acceptance.py
+      - run: python tests/browser_furniture_constraints.py
       - run: python tests/browser_smoke.py
       - run: python tests/browser_furniture_assets.py
       - run: python tests/browser_furniture_assets.py --targeted
