@@ -8,11 +8,13 @@
 {
   "id":"image-case-01", "title":"原图还原", "image":{"width":800,"height":600},
   "originPx":[40,30], "height":2800,
+  "furnitureReview":{"required":true,"requireFacingTargets":true},
   "calibration":{"mmPerPixel":10,"status":"estimated","evidence":"以图中床长约2000mm估计"},
   "rooms":[{"id":"R1","name":"卧室","polyPx":[[40,30],[440,30],[440,530],[40,530]],"atPx":[300,350],"mat":"wood","floorRotation":90}],
   "walls":[[20,10,460,30,"u"],[20,530,460,550,"u"],[20,30,40,530,"u"],[440,30,460,530,"u"]],
   "windows":[], "doors":[], "slides":[],
   "furniture":[{"id":"I1","type":"bed","name":"双人床","bboxPx":[41,60,241,240],"rot":270,"color":"#8b8067","accentColor":"#e2dcc9",
+    "orientationConstraint":{"status":"observed","front":[1,0],"feature":"headboard","maxAngleDegrees":5,"evidence":"源图床头板位于左侧，床尾朝右"},
     "placement":{"mode":"wall","roomId":"R1","edgeIndex":3,"side":"back","gapPx":0,"maxAdjustPx":5,"evidence":"床头与左墙相接"}}],
   "uncertainties":["层高使用默认值；无实测尺寸"]
 }
@@ -28,11 +30,13 @@
 
 ## 贴墙条件与计算
 
+源图家具还须遵循 [朝向、使用关系与接触约束](furniture-constraints.md)，开启 `furnitureReview`，记录 `orientationConstraint` 与 `facingTarget`。框误差不能发现180度反向；缺失的语义证据不能由旋转字段本身代替。
+
 `placement.mode:wall` 只用于原图明确接触墙的对象。`roomId + edgeIndex` 指定房间内轮廓的边，从第0个点到第1个点为边0，最后一条边回到首点。轮廓需屏幕顺时针。
 
 `side` 是家具局部接触面：back 床头/柜背，front 正面，left/right 局部左右面；旋转后其朝向必须与该墙面匹配。`gap` 单位mm，或观测中使用 `gapPx`；`maxAdjust` / `maxAdjustPx` 限制观测误差可修正的上限。
 
-校正将中心沿墙法线移动到“半深/半宽 + 指定间隙”的位置，保留沿墙位置、宽深和角度。必须有实体墙完整覆盖接触区，不允许吸到窗、门洞或客餐厅开放分区；修正后还会检查其他墙体碰撞。超出上限或朝向矛盾应回看图像，不能靠大幅移动或偷偷旋转来过关。
+校正将中心沿墙法线移动到“半深/半宽 + 指定间隙”的位置，保留沿墙位置、宽深和角度。默认必须有实体墙完整覆盖接触区，不允许自动吸到窗、门洞或客餐厅开放分区；修正后还检查其他墙碰撞。原图明确临窗时，只有显式 `support:window-plane`、源图证据与 `verticalVerified:false` 才允许对齐真实窗面投影，仍不代表窗台与家具高度兼容。超限或朝向矛盾须回看原图，不能靠大幅移动或偷偷旋转过关。
 
 独立家具使用 `mode:free` 或省略 placement；桌椅、地毯、茶几、居中的沙发不应仅因类别而强制靠墙。用户在页面手动移动/旋转/改尺寸后，原图贴墙约束转为 free，保留历史证据，避免再次构建时把用户改动吸回原处。
 

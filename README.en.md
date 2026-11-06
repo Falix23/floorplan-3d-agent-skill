@@ -1,5 +1,15 @@
 # floorplan-3d-agent-skill
 
+## Multi-floor plans and furniture checks
+
+Building schema v2 keeps a complete v1 plan per floor, with an explicit elevation, slab thickness and alignment evidence. The UI supports floor switching in 2D/3D, lower-floor outlines, whole-building stacking and an exploded view. Floor holes affect both the rendered slab and net area. Straight flights and connecting landings describe U/L stairs; validators check total rise and sampled upper-slab obstruction.
+
+The Agent interprets each source image and records evidence for furniture orientation, facing targets and wall contact. Conflicting directions or missing required evidence are rejected; intentional edits preserve the evidence as history and release the original constraints. Explicit polygon treads can represent known turns, but unclear spiral stairs remain a schematic estimate. Diagonal walls, automatic reconstruction of curved stairs, split levels, roofs and automatic stair walking are not supported. See the [multi-floor workflow](skills/floorplan-image/references/multi-floor.md) and [furniture constraints](skills/floorplan-image/references/furniture-constraints.md).
+
+Height review compares actual 3D mesh bounds with the configured floor height and includes full-height wall views. Cutaway views lower the displayed walls while furniture retains its height; the UI labels this distinction. Heights missing from the source remain estimates. These checks do not establish recognition accuracy or building-code compliance, and the editor still permits users to design objects taller than a room.
+
+Optional scikit-image auditing separates fit points from held-out checks, reports image residuals, and verifies the current building's embedded sources and offsets. It does not change the alignment automatically. Multi-floor regression design also draws on openPlan3D; see the [acceptance matrix](skills/floorplan-image/references/multi-floor-acceptance.md) for implemented and unsupported behaviors.
+
 ## Original author, copyright and license
 
 This derivative project is based on **[wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d)** by **[wuyi (wy51ai)](https://github.com/wy51ai)**. The original copyright notice and complete MIT License are preserved below and in [LICENSE](LICENSE).

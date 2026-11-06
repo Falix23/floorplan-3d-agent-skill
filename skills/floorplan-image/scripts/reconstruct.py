@@ -5,6 +5,7 @@ import json
 import math
 import statistics
 from pathlib import Path
+from furniture_constraints import validate_semantics, audit_semantics
 
 
 def polygon_area(poly):
@@ -54,10 +55,10 @@ def edge_data(plan,f):
     return v,t,n,length,half
 
 
-def wall_covers(plan,v,t,n,start,end):
+def wall_covers(plan,v,t,n,start,end,support='solid-wall'):
     """接触区须有真实墙面支撑；不能吸到门窗洞口或开放分区虚拟边。"""
     intervals=[]
-    for w in plan['walls']:
+    for w in plan['walls']+(plan['windows'] if support=='window-plane' else []):
         corners=[[w[0],w[1]],[w[2],w[1]],[w[2],w[3]],[w[0],w[3]]]
         normal=[(p[0]-v[0])*n[0]+(p[1]-v[1])*n[1] for p in corners]
         if abs(max(normal))>2:continue
@@ -72,6 +73,7 @@ def wall_covers(plan,v,t,n,start,end):
 
 
 def refine_plan(plan):
+    validate_semantics(plan)
     p=copy.deepcopy(plan);adjustments=[]
     for f in p['furniture']:
         a=f.get('placement',{})
@@ -85,7 +87,7 @@ def refine_plan(plan):
         before=[f['cx'],f['cy']];f['cx']+=n[0]*delta;f['cy']+=n[1]*delta
         tang=[(x-v[0])*t[0]+(y-v[1])*t[1] for x,y in footprint(f)]
         if min(tang)<-2 or max(tang)>length+2:raise ValueError(f['id']+' 家具接触区超出指定墙边')
-        if not wall_covers(p,v,t,n,min(tang),max(tang)):raise ValueError(f['id']+' 贴墙区缺少实体墙，可能是门窗洞口或开放边界')
+        if not wall_covers(p,v,t,n,min(tang),max(tang),a.get('support','solid-wall')):raise ValueError(f['id']+' 贴墙区缺少实体墙/指定窗面，可能是门洞或开放边界')
         if any(intersection_depth(footprint(f),w)>2 for w in p['walls']):raise ValueError(f['id']+' 贴墙后与其他墙体碰撞')
         adjustments.append({'id':f['id'],'before':before,'after':[f['cx'],f['cy']],'distanceMm':abs(delta),'targetGapMm':gap})
     return p,adjustments
@@ -93,8 +95,10 @@ def refine_plan(plan):
 
 def from_pixels(data):
     """观测框与图像先统一坐标，任何尺寸变化都留有证据。"""
-    p={k:copy.deepcopy(data[k]) for k in ('id','title','height','uncertainties','furnitureAssets') if k in data}
+    p={k:copy.deepcopy(data[k]) for k in ('id','title','height','uncertainties','furnitureAssets','furnitureReview') if k in data}
     p.update(schemaVersion=1,units='mm',height=data.get('height',2800))
+    # 图片还原默认要求语义证据，避免Agent漏写开关后又只通过外包框/穿墙检查。
+    p.setdefault('furnitureReview',{'required':True,'requireFacingTargets':True})
     calibration=data.get('calibration',{})
     anchors=[]
     if calibration.get('mmPerPixel') is not None:
@@ -102,7 +106,9 @@ def from_pixels(data):
     else:
         for r in data['rooms']:
             if r.get('calibrationAreaM2'):
-                anchors.append((r['id'],r['calibrationAreaM2']*1e6/polygon_area(r['polyPx'])))
+                net=polygon_area(r['polyPx'])-sum(polygon_area(h) for h in r.get('holesPx',[]))
+                if net<=0:raise ValueError('面积标定的房间净面积须大于零')
+                anchors.append((r['id'],r['calibrationAreaM2']*1e6/net))
         if not anchors:raise ValueError('需要 mmPerPixel、尺寸标注标定或至少一个可靠房间面积标注')
         scale=math.sqrt(statistics.median(v for _,v in anchors));status='estimated';evidence='根据房间面积标注与像素内轮廓估计，非实测长度'
     if not isinstance(scale,(int,float)) or not math.isfinite(scale) or scale<=0:raise ValueError('像素比例无效')
@@ -113,8 +119,9 @@ def from_pixels(data):
     p['reference']={'width':data['image']['width'],'height':data['image']['height'],'originPx':[ox,oy],'mmPerPixel':scale}
     p['rooms']=[]
     for r in data['rooms']:
-        item={k:copy.deepcopy(v) for k,v in r.items() if k not in ('polyPx','atPx','calibrationAreaM2')}
+        item={k:copy.deepcopy(v) for k,v in r.items() if k not in ('polyPx','atPx','holesPx','calibrationAreaM2')}
         item['poly']=list(map(pt,r['polyPx']))
+        if 'holesPx' in r:item['holes']=[list(map(pt,h)) for h in r['holesPx']]
         if 'atPx'in r:item['at']=pt(r['atPx'])
         if 'calibrationAreaM2'in r:item['sourceAreaM2']=r['calibrationAreaM2']
         p['rooms'].append(item)
@@ -160,8 +167,8 @@ def audit_plan(plan):
             row['observedBBoxIoU']=round(inter/((bb[2]-bb[0])*(bb[3]-bb[1])+(out[2]-out[0])*(out[3]-out[1])-inter),5)
             row['centerErrorPx']=round(math.hypot((out[0]+out[2]-bb[0]-bb[2])/2,(out[1]+out[3]-bb[1]-bb[3])/2),4)
         rows.append(row)
-    areas=[{'id':r['id'],'sourceAreaM2':r['sourceAreaM2'],'reconstructedAreaM2':round(polygon_area(r['poly'])/1e6,3),'relativeError':round(polygon_area(r['poly'])/1e6/r['sourceAreaM2']-1,4)} for r in plan['rooms'] if r.get('sourceAreaM2')]
-    return {'furniture':rows,'wallCollisions':collisions,'roomAreas':areas,'note':'框一致性针对 Agent 记录的像素观测，不等同于真实图像识别准确率。'}
+    areas=[{'id':r['id'],'sourceAreaM2':r['sourceAreaM2'],'reconstructedAreaM2':round((polygon_area(r['poly'])-sum(polygon_area(h) for h in r.get('holes',[])))/1e6,3),'relativeError':round((polygon_area(r['poly'])-sum(polygon_area(h) for h in r.get('holes',[])))/1e6/r['sourceAreaM2']-1,4)} for r in plan['rooms'] if r.get('sourceAreaM2')]
+    return {'furniture':rows,'wallCollisions':collisions,'roomAreas':areas,'semanticReview':audit_semantics(plan),'note':'框一致性针对 Agent 记录的像素观测，不等同于真实图像识别准确率。'}
 
 
 def main():

@@ -1,4 +1,4 @@
 interface:
   display_name: "图片转可编辑户型与家具"
-  short_description: "识别户型和家具照片，匹配合法近似网格，生成可编辑的 2D/3D 页面"
-  default_prompt: "使用 $floorplan-image 还原我的户型，或按家具照片匹配合法近似模型并替换指定家具；输出可编辑2D/3D、完整JSON及来源、差异和实际验收记录。"
+  short_description: "识别单层/多层户型与家具照片，生成可编辑2D/3D并校验楼层和模型"
+  default_prompt: "使用 $floorplan-image 还原我的单层或多层户型，或按家具照片匹配合法近似模型并替换指定家具；多层逐层标定并核对对齐、标高、洞口和楼梯，输出可编辑2D/3D、完整JSON及来源、差异和实际验收记录。"

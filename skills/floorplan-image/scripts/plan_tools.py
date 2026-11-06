@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT / 'scripts'))
 from reconstruct import refine_plan
+from furniture_constraints import validate_semantics
 from asset_validation import validate_asset
 
 CATALOG = json.loads((ROOT / "references/furniture-catalog.json").read_text())
@@ -68,6 +69,9 @@ def validate(plan):
             raise ValueError(msg)
     p=plan
     require(isinstance(p,dict),"计划必须是 JSON 对象")
+    if p.get('schemaVersion') == 2:
+        from building import validate_building
+        return validate_building(p)
     require(p.get("schemaVersion")==1 and p.get("units")=="mm" and token(p.get("id")),"需要 schemaVersion:1、units:mm 和有效 id")
     require(isinstance(p.get("title"),str),"缺少 title")
     require(finite(p.get("height")) and 2000 <= p["height"] <= 6000,"层高需要 2000～6000 mm")
@@ -104,6 +108,8 @@ def validate(plan):
                 require(not segments_touch(poly[i],poly[(i+1)%n],poly[j],poly[(j+1)%n]),r["id"]+" 轮廓自交")
         if r.get("at") is not None:
             require(point(r["at"]) and inside(r["at"],poly),r["id"]+" 标签点必须在房间内")
+        from building import validate_holes
+        validate_holes(r)
     for w in p["walls"]:
         require(rect(w) and len(w)==5 and w[4] in {"b","e","n","low","u"},"墙体需为 [x0,y0,x1,y1,b/e/n/low/u]")
     for w in p["windows"]:
@@ -138,18 +144,27 @@ def validate(plan):
             require(isinstance(f['placement'],dict) and f['placement'].get('mode') in ('wall','free'),'placement.mode 需要 wall/free')
         for k in ("accentColor","frameColor","pillowColor"):
             require(k not in f or bool(re.fullmatch(r"#[0-9a-fA-F]{6}",f[k])),"家具配色无效")
-        if not any(inside([f["cx"],f["cy"]],r["poly"]) for r in p["rooms"]):
+        from building import usable
+        require(not any(inside([f['cx'], f['cy']], hole) for r in p['rooms'] for hole in r.get('holes', [])), f['id']+' 家具中心落在楼板洞口中')
+        if not any(usable([f["cx"],f["cy"]],r) for r in p["rooms"]):
             warnings.append(f["id"]+" 家具中心位于所有房间之外")
         rad=math.radians(f["rot"]);c,s=math.cos(rad),math.sin(rad)
         corners=[[f["cx"]+c*x-s*y,f["cy"]+s*x+c*y] for x,y in [(-f["w"]/2,-f["d"]/2),(f["w"]/2,-f["d"]/2),(f["w"]/2,f["d"]/2),(-f["w"]/2,f["d"]/2)]]
         if any(not any(inside(v,r["poly"]) for r in p["rooms"]) for v in corners):
             warnings.append(f["id"]+" 家具边角可能越界；检查是否为正常的墙挂或叠放")
+    validate_semantics(p)
     return warnings
 
 
 def build(plan,output,reference_image=None):
     validate(plan)
-    plan,adjustments=refine_plan(plan)
+    if plan.get('schemaVersion') == 2:
+        from building import refine_building
+        plan,adjustments=refine_building(plan)
+        if reference_image:
+            raise ValueError('多层参考图请使用 building.py 清单为各层指定 imageFile')
+    else:
+        plan,adjustments=refine_plan(plan)
     warnings=validate(plan)
     if reference_image:
         image=Path(reference_image);mime=mimetypes.guess_type(str(image))[0]

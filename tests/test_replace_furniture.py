@@ -64,6 +64,22 @@ class ReplaceFurnitureTests(unittest.TestCase):
         self.assertEqual(report['items'][1]['status'], 'kept')
         self.assertEqual(report['browserVerification']['status'], 'not_run')
 
+    def test_photo_replacement_releases_original_constraints_without_changing_non_targets(self):
+        self.plan['furnitureReview']={'required':True,'requireFacingTargets':True}
+        self.plan['furniture'][0]['facingTarget']={'targetId':'I3','maxAngleDegrees':60,'evidence':'原图椅子朝右下桌面'}
+        self.plan['furniture'][1].update(
+            orientationConstraint={'status':'observed','front':[0,1],'feature':'headboard','maxAngleDegrees':5,'evidence':'原图床头在北'},
+            placement={'mode':'free','evidence':'原图独立床位'})
+        original=copy.deepcopy(self.plan)
+        self.manifest['replacements'][0].update(set={'rot':90},placementEvidence='用户为新家具指定90度摆放')
+        result,report=self.apply()
+        self.assertTrue(report['ok'],report)
+        self.assertEqual(self.plan,original)
+        self.assertEqual(result['furniture'][1:],original['furniture'][1:])
+        self.assertEqual(result['furniture'][0]['orientationConstraint']['status'],'released')
+        self.assertEqual(result['furniture'][0]['previousFacingTarget']['targetId'],'I3')
+        self.assertNotIn('facingTarget',result['furniture'][0])
+
     def test_second_invalid_asset_rejects_whole_batch_without_mutation(self):
         self.manifest['replacements'][1] = {
             'itemId': 'I2', 'decision': 'replace', 'asset': 'absent.json', 'reason': '测试缺失资产'}

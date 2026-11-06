@@ -14,9 +14,14 @@ def main():
     a.add_argument("--mm-per-pixel",type=float,required=True)
     a.add_argument("--origin-x",type=float,default=0);a.add_argument("--origin-y",type=float,default=0)
     a.add_argument("--width",type=int);a.add_argument("--height",type=int)
+    a.add_argument("--floor-id",help="多层建筑中要叠加的楼层；坐标仍使用该层独立标定")
     v=a.parse_args()
     if v.mm_per_pixel<=0:a.error("mm-per-pixel 必须大于0")
     p=json.loads(Path(v.plan).read_text());validate(p)
+    if p.get('schemaVersion') == 2:
+        floors=[f for f in p['floors'] if f['id']==v.floor_id]
+        if len(floors)!=1:a.error('多层叠图需要有效 --floor-id，不把全部楼层叠在同一张图上')
+        p=floors[0]['plan']
     data=Path(v.image).read_bytes()
     w,h=v.width,v.height
     if not w or not h:
@@ -31,6 +36,7 @@ def main():
     out=[f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',f'<image width="{w}" height="{h}" href="data:{mime};base64,{base64.b64encode(data).decode()}" opacity="0.65"/>']
     for r in p["rooms"]:
         out.append(f'<polygon points="{points(r["poly"])}" fill="#00ccaa" fill-opacity=".08" stroke="#00aa88" stroke-width="2"/>')
+        for hole in r.get('holes',[]):out.append(f'<polygon points="{points(hole)}" fill="none" stroke="#ff9900" stroke-dasharray="5 3" stroke-width="2"/>')
     for wall in p["walls"]:
         x0,y0,x1,y1=wall[:4];poly=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]]
         out.append(f'<polygon points="{points(poly)}" fill="#ff3300" fill-opacity=".2" stroke="#ff3300"/>')
