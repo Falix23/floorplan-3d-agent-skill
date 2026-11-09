@@ -177,7 +177,24 @@ def run():
             assert message and page.evaluate('Floorplan.exportPlan()')==saved
             checks.append('无效切层拒绝且不破坏当前整栋状态')
             assert not errors,errors
-            context.close(); browser.close()
+            context.close()
+            # 独立触屏上下文覆盖真实手机的coarse pointer分支，不只缩窄桌面窗口。
+            phone = browser.new_context(viewport={'width':390,'height':844},
+                                        is_mobile=True,has_touch=True,device_scale_factor=2)
+            configure_browser_runtime(phone)
+            page = phone.new_page(); page.on('pageerror',lambda e:errors.append(str(e)))
+            page.goto(url); page.wait_for_function('!!window.Floorplan&&!!window.View3D')
+            assert page.evaluate('matchMedia("(pointer: coarse)").matches')
+            for width,height in [(390,844),(844,390),(390,844)]:
+                page.set_viewport_size({'width':width,'height':height}); settle_layout()
+                assert_visible(f'触屏窗口变化 {width}x{height}')
+                for fid in ['F1','F2','B1','F4']:
+                    page.locator('#floorSelect').select_option(fid); settle_layout()
+                    assert_visible(f'触屏 {width}x{height} {fid}')
+                page.screenshot(path=str(output/f'touch-{width}x{height}.png'))
+            checks.append('独立手机触屏上下文横竖屏连续切层完整可见')
+            assert not errors,errors
+            phone.close(); browser.close()
         report = {'ok':True,'checks':checks,'pageErrors':errors,'viewportChecks':viewport_checks,
                   'inspiration':'https://github.com/laanlabs/openPlan3D/tree/98f9cb467e4045c6abc5d9880ada1f03dff50c68/tests',
                   'notClaimed':['新增/复制/删除楼层UI','每层相机姿态恢复','完整楼梯净空与建筑规范'],
