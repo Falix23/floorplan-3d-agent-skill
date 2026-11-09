@@ -936,7 +936,7 @@ const svg = $('#plan');
 let state = load() || defaultState();
 const ui = {tool:'select', sel:null, mA:null, mCur:null,
   layers:{dims:true, labels:true, furn:true, grid:false, bearing:false, wallSnap:true}};
-let view = {x0:0, y0:0, s:.06};
+let view = {x0:0, y0:0, s:.06, fitted:true};
 const undoStack = [], redoStack = [];
 
 const persistenceStatus={saved:true,error:null};
@@ -1609,12 +1609,15 @@ function applyView(){
   renderSel(); renderMeasure();
 }
 function fitView(){
+  view.fitted = true;
   const W = svg.clientWidth, H = svg.clientHeight;
+  if (!W || !H) return; // 隐藏/尚未布局的画布在尺寸恢复后由ResizeObserver重新适配。
   view.s = Math.min(W/BOUNDS.w, H/BOUNDS.h);
   view.x0 = BOUNDS.x - (W/view.s - BOUNDS.w)/2; view.y0 = BOUNDS.y - (H/view.s - BOUNDS.h)/2;
   applyView();
 }
 function zoomAt(ns, mx, my){
+  view.fitted = false;
   ns = Math.max(.012, Math.min(2, ns));
   const px = view.x0 + mx/view.s, py = view.y0 + my/view.s;
   view.s = ns; view.x0 = px - mx/ns; view.y0 = py - my/ns; applyView();
@@ -1719,6 +1722,7 @@ svg.addEventListener('pointermove', e => {
   if (pinch){
     if (touches.size < 2) return;
     const {d, c} = pinchInfo(), ns = Math.max(.012, Math.min(2, pinch.s * d / pinch.d));
+    view.fitted = false;
     view.s = ns; view.x0 = pinch.px - c[0]/ns; view.y0 = pinch.py - c[1]/ns; applyView();
     return;
   }
@@ -1738,6 +1742,7 @@ svg.addEventListener('pointermove', e => {
   if (drag.kind === 'pan'){
     if (!drag.moved && !far) return;
     drag.moved = true; svg.classList.add('panning');
+    view.fitted = false;
     view.x0 = drag.x0 - (e.clientX-drag.sx)/view.s; view.y0 = drag.y0 - (e.clientY-drag.sy)/view.s; applyView(); return;
   }
   const f = getF(drag.id); if (!f) return;
@@ -1978,12 +1983,12 @@ $('#editPlan').onclick=()=>{$('#planText').value=JSON.stringify(exportPlan(),nul
 $('#cancelPlan').onclick=()=>$('#planEditor').close();
 $('#applyPlan').onclick=()=>{try{loadPlan(JSON.parse($('#planText').value));$('#planEditor').close();}catch(e){$('#planError').textContent=e.message;}};
 $('#reset').onclick = () => { if (confirm(tr('恢复为默认设计方案？（可撤销）', 'Reset to the default design? (undoable)'))){ const b = snap(); state = defaultState(); ui.sel = null; commit(b); renderAll(); fitView(); } };
-// 横竖屏切换、表头换行等都会改变画布尺寸；尺寸从 0 恢复（如首次布局）时重新适应窗口
-// 其余尺寸变化（收起 / 展开面板等）保持画面中心不动
+// 切层适配可能早于表头换行/响应式布局完成，后续尺寸变化继续保持整层可见。
+// 用户主动缩放或平移后才保留其视野；点击适应窗口或切层重新开启自动适配。
 let lastW = 0, lastH = 0;
 new ResizeObserver(() => {
-  const w = svg.clientWidth, h = svg.clientHeight; if (!w) return;
-  if (!lastW) fitView();
+  const w = svg.clientWidth, h = svg.clientHeight; if (!w || !h) { lastW=lastH=0; return; }
+  if (!lastW || view.fitted) fitView();
   else { view.x0 -= (w - lastW)/2/view.s; view.y0 -= (h - lastH)/2/view.s; applyView(); }
   lastW = w; lastH = h;
 }).observe(svg);
