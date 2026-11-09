@@ -73,15 +73,56 @@ def run():
             assert page.locator('#refToggle').evaluate('n=>n.hidden')
             assert page.locator('#gReference image').count()==0
             checks.append('非首层缺省可选资产/参考图且无家具时不泄漏上一层选择、家具或图源')
-            for width in [1500,390]:
-                page.set_viewport_size({'width':width,'height':1000})
+            # 等待浏览器完成布局和ResizeObserver，而非用固定延时掩盖切层竞态。
+            def settle_layout():
+                page.evaluate('()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+
+            def assert_visible(label):
+                visible = page.locator('#plan').evaluate('''svg=>{
+                    const rect=svg.getBoundingClientRect(), matrix=svg.getScreenCTM();
+                    const points=Floorplan.activePlan().rooms.flatMap(r=>r.poly).map(([x,y])=>{
+                        const p=svg.createSVGPoint();p.x=x;p.y=y;const q=p.matrixTransform(matrix);
+                        return [q.x,q.y];
+                    });
+                    return {viewBox:svg.getAttribute('viewBox'),rect:[rect.x,rect.y,rect.width,rect.height],
+                        outside:points.filter(([x,y])=>x<rect.left-.5||x>rect.right+.5||y<rect.top-.5||y>rect.bottom+.5)};
+                }''')
+                assert not visible['outside'], (label, visible)
+
+            viewport_checks = []
+            for width, height in [(1500,1000),(390,844),(844,390),(390,844),(1500,1000)]:
+                page.set_viewport_size({'width':width,'height':height})
+                settle_layout()
+                assert_visible(f'仅改变窗口 {width}x{height}')
                 for fid in ['F4','B1','F2','F1']:
                     page.locator('#floorSelect').select_option(fid)
-                    bounds = [float(x) for x in page.locator('#plan').get_attribute('viewBox').split()]
-                    plan = page.evaluate('Floorplan.activePlan()')
-                    assert all(bounds[0]<=x<=bounds[0]+bounds[2] and bounds[1]<=y<=bounds[1]+bounds[3]
-                               for r in plan['rooms'] for x,y in r['poly'])
+                    settle_layout()
+                    assert_visible(f'{width}x{height} {fid}')
+                    viewport_checks.append({'width':width,'height':height,'floor':fid})
+                page.screenshot(path=str(output/f'viewport-{width}x{height}.png'))
             checks.append('桌面和手机逐层自动适配视野，L形与其他楼层均在可视范围')
+            # 手动缩放后改窗口仍应保留比例与中心，不能被自动适配抢走。
+            page.locator('#zoomIn').click()
+            def camera_2d():
+                return page.locator('#plan').evaluate('''svg=>{
+                    const [x,y,w,h]=svg.getAttribute('viewBox').split(' ').map(Number);
+                    return [svg.clientWidth/w,x+w/2,y+h/2];
+                }''')
+            before_pan = camera_2d()
+            canvas = page.locator('#plan').bounding_box()
+            page.mouse.move(canvas['x']+10,canvas['y']+10)
+            page.mouse.down(); page.mouse.move(canvas['x']+60,canvas['y']+40,steps=5); page.mouse.up()
+            manual = camera_2d()
+            assert abs(manual[1]-before_pan[1])>1 and abs(manual[2]-before_pan[2])>1
+            page.set_viewport_size({'width':1200,'height':850}); settle_layout()
+            assert all(abs(a-b)<1e-6 for a,b in zip(manual,camera_2d())), (manual,camera_2d())
+            page.locator('#fit').click()
+            page.set_viewport_size({'width':390,'height':844}); settle_layout()
+            assert_visible('手动缩放后点击适应重新开启自动适配')
+            # 同一层重复选择不触发change；自动适配仍须能独立应对窗口变化。
+            page.locator('#floorSelect').select_option('F1'); settle_layout()
+            assert_visible('同层重复选择')
+            checks.append('手动缩放和平移保留中心比例，适应按钮恢复自动适配，同层重复选择不裁切')
             page.set_viewport_size({'width':1500,'height':1000})
             page.locator('[data-view="3d"]').click(); page.wait_for_function("!document.querySelector('#stage').classList.contains('animating')")
             page.locator('#buildingMode').select_option('stacked')
@@ -97,6 +138,14 @@ def run():
                 assert not page.evaluate("View3D.floorProbe('F4',5500,3650)")
             page.screenshot(path=str(output/'mixed-height-stack.png'))
             checks.append('不同活动层不改变四层真实叠放，负标高、非等层高、偏移和L形缺角网格正确')
+            for width,height in [(390,844),(844,390),(1500,1000)]:
+                page.set_viewport_size({'width':width,'height':height}); settle_layout()
+                for fid in ['F4','B1','F1']:
+                    page.locator('#floorSelect').select_option(fid); settle_layout()
+                    assert page.locator('#floorSelect').is_visible()
+                    assert len(page.evaluate('View3D.buildingDiagnostics().floors'))==4
+                page.screenshot(path=str(output/f'stacked-{width}x{height}.png'))
+            checks.append('桌面及手机横竖屏3D叠层可切层且保留全部四层')
             page.locator('[data-view="2d"]').click(); page.wait_for_function("!document.querySelector('#stage').classList.contains('animating')")
             page.locator('#floorSelect').select_option('F2')
             before = page.evaluate('Floorplan.exportPlan()')
@@ -128,8 +177,25 @@ def run():
             assert message and page.evaluate('Floorplan.exportPlan()')==saved
             checks.append('无效切层拒绝且不破坏当前整栋状态')
             assert not errors,errors
-            context.close(); browser.close()
-        report = {'ok':True,'checks':checks,'pageErrors':errors,
+            context.close()
+            # 独立触屏上下文覆盖真实手机的coarse pointer分支，不只缩窄桌面窗口。
+            phone = browser.new_context(viewport={'width':390,'height':844},
+                                        is_mobile=True,has_touch=True,device_scale_factor=2)
+            configure_browser_runtime(phone)
+            page = phone.new_page(); page.on('pageerror',lambda e:errors.append(str(e)))
+            page.goto(url); page.wait_for_function('!!window.Floorplan&&!!window.View3D')
+            assert page.evaluate('matchMedia("(pointer: coarse)").matches')
+            for width,height in [(390,844),(844,390),(390,844)]:
+                page.set_viewport_size({'width':width,'height':height}); settle_layout()
+                assert_visible(f'触屏窗口变化 {width}x{height}')
+                for fid in ['F1','F2','B1','F4']:
+                    page.locator('#floorSelect').select_option(fid); settle_layout()
+                    assert_visible(f'触屏 {width}x{height} {fid}')
+                page.screenshot(path=str(output/f'touch-{width}x{height}.png'))
+            checks.append('独立手机触屏上下文横竖屏连续切层完整可见')
+            assert not errors,errors
+            phone.close(); browser.close()
+        report = {'ok':True,'checks':checks,'pageErrors':errors,'viewportChecks':viewport_checks,
                   'inspiration':'https://github.com/laanlabs/openPlan3D/tree/98f9cb467e4045c6abc5d9880ada1f03dff50c68/tests',
                   'notClaimed':['新增/复制/删除楼层UI','每层相机姿态恢复','完整楼梯净空与建筑规范'],
                   'fixture':'自制4层工程夹具，不是输入图识别精度测试'}
